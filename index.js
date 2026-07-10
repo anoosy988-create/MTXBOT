@@ -358,6 +358,13 @@ class MTXBot extends Client {
         this.on('messageCreate', (m) => this.onMessage(m));
         this.on('guildMemberAdd', (m) => this.onMemberAdd(m));
         this.on('interactionCreate', (i) => this.onInteraction(i));
+
+        // ═════════════════════════════════════════════════════════════
+        // 🚨 NUKE PROTECTION EVENTS
+        // ═════════════════════════════════════════════════════════════
+        this.on('channelCreate', (ch) => this.onChannelCreate(ch));
+        this.on('channelDelete', (ch) => this.onChannelDelete(ch));
+        this.on('channelUpdate', (oldCh, newCh) => this.onChannelUpdate(oldCh, newCh));
     }
 
     async onReady() {
@@ -412,9 +419,32 @@ class MTXBot extends Client {
     }
 
     async onMemberAdd(member) {
+        // Bot protection
         if (member.user.bot) {
             console.log(`[MTX] بوت دخل السيرفر: ${member.user.tag}`);
             await this.protection.checkBotEntry(member);
+            return;
+        }
+
+        // Raid detection (optional - can be expanded)
+        const guild = member.guild;
+        const now = Date.now();
+
+        if (!this.protection.recentJoins.has(guild.id)) {
+            this.protection.recentJoins.set(guild.id, []);
+        }
+
+        const joins = this.protection.recentJoins.get(guild.id);
+        joins.push(now);
+
+        // Keep only last 10 seconds
+        const recentJoins = joins.filter(t => now - t <= 10000);
+        this.protection.recentJoins.set(guild.id, recentJoins);
+
+        // If 5+ joins in 10 seconds, possible raid
+        if (recentJoins.length >= 5) {
+            console.log(`[MTX RAID] 🚨 اكتشاف Raid محتمل! ${recentJoins.length} دخول في 10 ثواني`);
+            // Could add auto-lock here
         }
     }
 
@@ -475,6 +505,9 @@ class MTXBot extends Client {
         const parts = content.split(/\s+/);
         const cmd = parts[0];
         const args = parts.slice(1);
+
+        // Debug log
+        console.log(`[MTX CMD] Command received: "${cmd}" from ${message.author.tag} in #${message.channel.name}`);
 
         // قائمة الأوامر الإدارية (تتطلب Administrator)
         const adminCmds = [
@@ -691,24 +724,79 @@ class MTXBot extends Client {
     }
 
     async cmdLock(m, args) {
-        const ch = m.mentions.channels.first() || m.channel;
+        // Resolve channel: mention, ID, or current channel
+        let ch = m.mentions.channels.first();
+        if (!ch && args[0]) {
+            // Try to find by ID or name
+            const idMatch = args[0].match(/\d+/);
+            if (idMatch) {
+                ch = m.guild.channels.cache.get(idMatch[0]);
+            }
+        }
+        ch = ch || m.channel;
+
+        // Check bot permissions
+        const botMember = m.guild.members.me;
+        const botPerms = ch.permissionsFor(botMember);
+        if (!botPerms.has(PermissionsBitField.Flags.ManageChannels)) {
+            return m.reply({ embeds: [Embeds.error('صلاحيات', 'البوت ما عنده صلاحية **Manage Channels** في هذا الروم!')] });
+        }
+        if (!botPerms.has(PermissionsBitField.Flags.ManageRoles)) {
+            return m.reply({ embeds: [Embeds.error('صلاحيات', 'البوت ما عنده صلاحية **Manage Roles**!')] });
+        }
+
+        // Check if bot's highest role is above the @everyone role
+        const everyoneRole = m.guild.roles.everyone;
+        const botHighestRole = botMember.roles.highest;
+        if (botHighestRole.position <= everyoneRole.position) {
+            return m.reply({ embeds: [Embeds.error('رتبة', 'رتبة البوت لازم تكون أعلى من @everyone!')] });
+        }
+
         try {
             await ch.permissionOverwrites.edit(m.guild.roles.everyone, { SendMessages: false });
-            m.reply({ embeds: [Embeds.success('تم القفل', `🔒 **${ch}** تم قفله!`)] });
+            const embed = Embeds.success('تم القفل', 
+                `🔒 **${ch}** تم قفله بنجاح!\n\n` +
+                `👤 **بواسطة:** ${m.author}\n` +
+                `⏰ **الوقت:** ${new Date().toLocaleString('ar-SA')}`
+            );
+            await m.reply({ embeds: [embed] });
             await this.protection.sendLog(m.guild, Embeds.logAction('قفل روم', m.author, m.author, 'قفل', { 'الروم': ch.toString() }));
         } catch(e) {
-            m.reply({ embeds: [Embeds.error('خطأ', e.message)] });
+            console.error('[MTX] خطأ في القفل:', e);
+            m.reply({ embeds: [Embeds.error('خطأ', `\`\`${e.message}\`\``)] });
         }
     }
 
     async cmdUnlock(m, args) {
-        const ch = m.mentions.channels.first() || m.channel;
+        // Resolve channel: mention, ID, or current channel
+        let ch = m.mentions.channels.first();
+        if (!ch && args[0]) {
+            const idMatch = args[0].match(/\d+/);
+            if (idMatch) {
+                ch = m.guild.channels.cache.get(idMatch[0]);
+            }
+        }
+        ch = ch || m.channel;
+
+        // Check bot permissions
+        const botMember = m.guild.members.me;
+        const botPerms = ch.permissionsFor(botMember);
+        if (!botPerms.has(PermissionsBitField.Flags.ManageChannels)) {
+            return m.reply({ embeds: [Embeds.error('صلاحيات', 'البوت ما عنده صلاحية **Manage Channels** في هذا الروم!')] });
+        }
+
         try {
             await ch.permissionOverwrites.edit(m.guild.roles.everyone, { SendMessages: true });
-            m.reply({ embeds: [Embeds.success('تم الفتح', `🔓 **${ch}** تم فتحه!`)] });
+            const embed = Embeds.success('تم الفتح', 
+                `🔓 **${ch}** تم فتحه بنجاح!\n\n` +
+                `👤 **بواسطة:** ${m.author}\n` +
+                `⏰ **الوقت:** ${new Date().toLocaleString('ar-SA')}`
+            );
+            await m.reply({ embeds: [embed] });
             await this.protection.sendLog(m.guild, Embeds.logAction('فتح روم', m.author, m.author, 'فتح', { 'الروم': ch.toString() }));
         } catch(e) {
-            m.reply({ embeds: [Embeds.error('خطأ', e.message)] });
+            console.error('[MTX] خطأ في الفتح:', e);
+            m.reply({ embeds: [Embeds.error('خطأ', `\`\`${e.message}\`\``)] });
         }
     }
 
@@ -791,6 +879,76 @@ class MTXBot extends Client {
             .setTimestamp();
 
         await m.reply({ embeds: [embed], components: [row] });
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    // 🚨 NUKE PROTECTION HANDLERS
+    // ═════════════════════════════════════════════════════════════════
+
+    async onChannelCreate(channel) {
+        if (!channel.guild) return;
+
+        try {
+            const logs = await channel.guild.fetchAuditLogs({
+                limit: 1,
+                type: AuditLogEvent.ChannelCreate
+            });
+
+            const entry = logs.entries.first();
+            if (!entry || entry.target?.id !== channel.id) return;
+            if (Date.now() - entry.createdTimestamp > 5000) return; // Too old
+
+            const executor = entry.executor;
+            console.log(`[MTX] روم جديد: #${channel.name} | أنشأه: ${executor?.tag || 'unknown'}`);
+
+            await this.protection.checkChannelCreate(channel, executor);
+        } catch(e) {
+            console.error('[MTX NUKE] خطأ في channelCreate:', e.message);
+        }
+    }
+
+    async onChannelDelete(channel) {
+        if (!channel.guild) return;
+
+        try {
+            const logs = await channel.guild.fetchAuditLogs({
+                limit: 1,
+                type: AuditLogEvent.ChannelDelete
+            });
+
+            const entry = logs.entries.first();
+            if (!entry || entry.target?.id !== channel.id) return;
+            if (Date.now() - entry.createdTimestamp > 5000) return;
+
+            const executor = entry.executor;
+            console.log(`[MTX] روم محذوف: #${channel.name} | حذفه: ${executor?.tag || 'unknown'}`);
+
+            await this.protection.checkChannelDelete(channel, executor);
+        } catch(e) {
+            console.error('[MTX NUKE] خطأ في channelDelete:', e.message);
+        }
+    }
+
+    async onChannelUpdate(oldChannel, newChannel) {
+        if (!oldChannel.guild) return;
+
+        try {
+            const logs = await oldChannel.guild.fetchAuditLogs({
+                limit: 1,
+                type: AuditLogEvent.ChannelUpdate
+            });
+
+            const entry = logs.entries.first();
+            if (!entry || entry.target?.id !== oldChannel.id) return;
+            if (Date.now() - entry.createdTimestamp > 5000) return;
+
+            const executor = entry.executor;
+            console.log(`[MTX] روم معدل: #${oldChannel.name} | عدله: ${executor?.tag || 'unknown'}`);
+
+            await this.protection.checkChannelUpdate(newChannel, executor);
+        } catch(e) {
+            console.error('[MTX NUKE] خطأ في channelUpdate:', e.message);
+        }
     }
 
     parseTime(str) {
