@@ -1,5 +1,5 @@
-// MTX Bot - Anti Nuke System
-// Real programmer code, not AI trash
+// mtx bot - my own protection bot
+// dont copy this shit
 
 const discord = require('discord.js');
 const fs = require('fs');
@@ -8,360 +8,395 @@ const client = new discord.Client({
     intents: [
         discord.GatewayIntentBits.Guilds,
         discord.GatewayIntentBits.GuildMessages,
-        discord.GatewayIntentBits.GuildMembers,
+        discord.GuildMembers,
         discord.GatewayIntentBits.MessageContent,
-        discord.GatewayIntentBits.GuildModeration,
-        discord.GatewayIntentBits.GuildPresences
+        discord.GatewayIntentBits.GuildModeration
     ]
 });
 
-const PREFIX = '.';
+const prefix = '.';
 
-// limits
-const LIMITS = {
-    CHANNEL_DELETE: 10,    // مسح/إنشاء 10 رومات
-    BAN_MEMBERS: 5,        // بند 5 أشخاص
-    ROLE_DELETE: 10,       // مسح 10 رولات
-    KICK_MEMBERS: 10,      // كيك 10
-    TIME_WINDOW: 10000     // 10 ثواني
-};
-
-// tracker: { userId: { action: count, timestamp: [] } }
-const tracker = new Map();
-
-// simple db
-let db = { warnings: {}, protection: {} };
-try { db = JSON.parse(fs.readFileSync('./db.json', 'utf8')); } catch {}
-function saveDb() { fs.writeFileSync('./db.json', JSON.stringify(db, null, 2)); }
-
-function embed(color, title, desc) {
-    return new discord.EmbedBuilder().setColor(color).setTitle(title).setDescription(desc).setTimestamp();
+// db
+let db = {};
+try {
+    db = JSON.parse(fs.readFileSync('./db.json'));
+} catch (err) {
+    db = { warns: {}, prot: {} };
+    fs.writeFileSync('./db.json', JSON.stringify(db));
 }
 
-function canMod(member) {
-    return member.permissions.has(discord.PermissionsBitField.Flags.Administrator) || member.id === member.guild.ownerId;
+function save() {
+    fs.writeFileSync('./db.json', JSON.stringify(db, null, 2));
 }
 
-// --- ANTI NUKE CORE ---
+function emb(color, title, desc) {
+    return new discord.EmbedBuilder().setColor(color).setTitle(title).setDescription(desc);
+}
 
-function trackAction(guildId, userId, action) {
-    const key = `${guildId}_${userId}`;
+function isAdmin(m) {
+    return m.permissions.has(discord.PermissionsBitField.Flags.Administrator) || m.id === m.guild.ownerId;
+}
+
+// tracker for anti nuke
+const actions = new Map();
+
+function track(gid, uid, type) {
+    const key = gid + '_' + uid;
     const now = Date.now();
     
-    if (!tracker.has(key)) tracker.set(key, {});
-    const data = tracker.get(key);
+    if (!actions.has(key)) actions.set(key, {});
+    const data = actions.get(key);
     
-    if (!data[action]) data[action] = [];
-    data[action].push(now);
+    if (!data[type]) data[type] = [];
+    data[type].push(now);
     
-    // clean old
-    data[action] = data[action].filter(t => now - t <= LIMITS.TIME_WINDOW);
+    // remove old (10 seconds)
+    data[type] = data[type].filter(t => now - t < 10000);
     
-    return data[action].length;
+    return data[type].length;
 }
 
-async function punish(guild, member, reason) {
-    console.log(`[MTX NUKE] Punishing ${member.user.tag} for: ${reason}`);
+// punishment
+async function nukePunish(guild, userId, reason) {
+    console.log('NUKE: ' + userId + ' - ' + reason);
     
-    // 1. remove all roles
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member) return;
+    
+    // remove all roles
     try {
-        for (const role of member.roles.cache.values()) {
-            if (role.name !== '@everyone' && role.editable) {
-                await member.roles.remove(role).catch(() => {});
+        for (const r of member.roles.cache.values()) {
+            if (r.name !== '@everyone' && r.editable) {
+                await member.roles.remove(r);
             }
         }
-        console.log(`[MTX NUKE] Roles removed`);
     } catch (e) {
-        console.log(`[MTX NUKE] Remove roles failed: ${e.message}`);
+        console.log('cant remove roles: ' + e.message);
     }
     
-    // 2. ban
+    // ban
     try {
-        await guild.members.ban(member.id, { 
-            reason: `MTX Anti-Nuke: ${reason}`, 
-            deleteMessageDays: 0 
-        });
-        console.log(`[MTX NUKE] Banned`);
+        await guild.members.ban(userId, { reason: 'MTX: ' + reason, deleteMessageDays: 0 });
     } catch (e) {
-        console.log(`[MTX NUKE] Ban failed: ${e.message}`);
-        
-        // try kick if ban fails
+        console.log('ban failed: ' + e.message);
         try {
-            await member.kick(`MTX Anti-Nuke: ${reason}`);
-            console.log(`[MTX NUKE] Kicked instead`);
-        } catch (e2) {}
+            await member.kick('MTX: ' + reason);
+        } catch (e2) {
+            console.log('kick also failed: ' + e2.message);
+        }
     }
     
-    // 3. notify owner
+    // notify owner
     const owner = await guild.fetchOwner().catch(() => null);
     if (owner) {
-        const emb = embed(0xff0000, '🚨 Anti-Nuke Triggered!', 
-            `**User:** ${member} (\`${member.id}\`)\n` +
-            `**Reason:** ${reason}\n` +
-            `**Time:** ${new Date().toLocaleString('ar-SA')}\n\n` +
-            `**Actions taken:**\n` +
-            `✅ Roles removed\n` +
-            `✅ Banned/Kicked`
-        );
-        owner.send({ embeds: [emb] }).catch(() => {});
+        owner.send('🚨 Nuke detected!\nUser: <@' + userId + '>\nReason: ' + reason).catch(() => {});
     }
 }
 
-// --- EVENTS ---
+// ==================== ANTI NUKE EVENTS ====================
 
-// channel create
-client.on('channelCreate', async channel => {
-    if (!channel.guild) return;
-    
-    const logs = await channel.guild.fetchAuditLogs({ limit: 1, type: discord.AuditLogEvent.ChannelCreate });
-    const entry = logs.entries.first();
-    if (!entry) return;
-    
-    const executor = entry.executor;
-    if (executor.id === client.user.id) return;
-    if (canMod(await channel.guild.members.fetch(executor.id).catch(() => null))) return;
-    
-    const count = trackAction(channel.guild.id, executor.id, 'channelCreate');
-    console.log(`[MTX] ${executor.tag} created channel (${count}/${LIMITS.CHANNEL_DELETE})`);
-    
-    if (count >= LIMITS.CHANNEL_DELETE) {
-        await punish(channel.guild, await channel.guild.members.fetch(executor.id), `Created ${count} channels in 10s`);
-    }
-});
-
-// channel delete
+// channel delete (audit log)
 client.on('channelDelete', async channel => {
     if (!channel.guild) return;
     
-    const logs = await channel.guild.fetchAuditLogs({ limit: 1, type: discord.AuditLogEvent.ChannelDelete });
+    const logs = await channel.guild.fetchAuditLogs({ limit: 1, type: discord.AuditLogEvent.ChannelDelete }).catch(() => null);
+    if (!logs) return;
+    
     const entry = logs.entries.first();
     if (!entry) return;
     
-    const executor = entry.executor;
-    if (executor.id === client.user.id) return;
-    if (canMod(await channel.guild.members.fetch(executor.id).catch(() => null))) return;
+    const user = entry.executor;
+    if (user.id === client.user.id) return;
+    if (isAdmin(await channel.guild.members.fetch(user.id).catch(() => null))) return;
     
-    const count = trackAction(channel.guild.id, executor.id, 'channelDelete');
-    console.log(`[MTX] ${executor.tag} deleted channel (${count}/${LIMITS.CHANNEL_DELETE})`);
+    const count = track(channel.guild.id, user.id, 'delch');
+    console.log(user.tag + ' deleted channel (' + count + '/10)');
     
-    if (count >= LIMITS.CHANNEL_DELETE) {
-        await punish(channel.guild, await channel.guild.members.fetch(executor.id), `Deleted ${count} channels in 10s`);
+    if (count >= 10) {
+        await nukePunish(channel.guild, user.id, 'deleted ' + count + ' channels');
+    }
+});
+
+// channel create (audit log)
+client.on('channelCreate', async channel => {
+    if (!channel.guild) return;
+    
+    const logs = await channel.guild.fetchAuditLogs({ limit: 1, type: discord.AuditLogEvent.ChannelCreate }).catch(() => null);
+    if (!logs) return;
+    
+    const entry = logs.entries.first();
+    if (!entry) return;
+    
+    const user = entry.executor;
+    if (user.id === client.user.id) return;
+    if (isAdmin(await channel.guild.members.fetch(user.id).catch(() => null))) return;
+    
+    const count = track(channel.guild.id, user.id, 'mkch');
+    console.log(user.tag + ' created channel (' + count + '/10)');
+    
+    if (count >= 10) {
+        await nukePunish(channel.guild, user.id, 'created ' + count + ' channels');
     }
 });
 
 // role delete
 client.on('roleDelete', async role => {
-    const logs = await role.guild.fetchAuditLogs({ limit: 1, type: discord.AuditLogEvent.RoleDelete });
+    const logs = await role.guild.fetchAuditLogs({ limit: 1, type: discord.AuditLogEvent.RoleDelete }).catch(() => null);
+    if (!logs) return;
+    
     const entry = logs.entries.first();
     if (!entry) return;
     
-    const executor = entry.executor;
-    if (executor.id === client.user.id) return;
-    if (canMod(await role.guild.members.fetch(executor.id).catch(() => null))) return;
+    const user = entry.executor;
+    if (user.id === client.user.id) return;
+    if (isAdmin(await role.guild.members.fetch(user.id).catch(() => null))) return;
     
-    const count = trackAction(role.guild.id, executor.id, 'roleDelete');
-    console.log(`[MTX] ${executor.tag} deleted role (${count}/${LIMITS.ROLE_DELETE})`);
+    const count = track(role.guild.id, user.id, 'delrl');
+    console.log(user.tag + ' deleted role (' + count + '/10)');
     
-    if (count >= LIMITS.ROLE_DELETE) {
-        await punish(role.guild, await role.guild.members.fetch(executor.id), `Deleted ${count} roles in 10s`);
+    if (count >= 10) {
+        await nukePunish(role.guild, user.id, 'deleted ' + count + ' roles');
     }
 });
 
 // ban
 client.on('guildBanAdd', async ban => {
-    const logs = await ban.guild.fetchAuditLogs({ limit: 1, type: discord.AuditLogEvent.MemberBanAdd });
+    const logs = await ban.guild.fetchAuditLogs({ limit: 1, type: discord.AuditLogEvent.MemberBanAdd }).catch(() => null);
+    if (!logs) return;
+    
     const entry = logs.entries.first();
     if (!entry) return;
     
-    const executor = entry.executor;
-    if (executor.id === client.user.id) return;
-    if (canMod(await ban.guild.members.fetch(executor.id).catch(() => null))) return;
+    const user = entry.executor;
+    if (user.id === client.user.id) return;
+    if (isAdmin(await ban.guild.members.fetch(user.id).catch(() => null))) return;
     
-    const count = trackAction(ban.guild.id, executor.id, 'ban');
-    console.log(`[MTX] ${executor.tag} banned user (${count}/${LIMITS.BAN_MEMBERS})`);
+    const count = track(ban.guild.id, user.id, 'ban');
+    console.log(user.tag + ' banned (' + count + '/5)');
     
-    if (count >= LIMITS.BAN_MEMBERS) {
-        await punish(ban.guild, await ban.guild.members.fetch(executor.id), `Banned ${count} users in 10s`);
+    if (count >= 5) {
+        await nukePunish(ban.guild, user.id, 'banned ' + count + ' users');
     }
 });
 
 // kick
 client.on('guildMemberRemove', async member => {
-    const logs = await member.guild.fetchAuditLogs({ limit: 1, type: discord.AuditLogEvent.MemberKick });
+    const logs = await member.guild.fetchAuditLogs({ limit: 1, type: discord.AuditLogEvent.MemberKick }).catch(() => null);
+    if (!logs) return;
+    
     const entry = logs.entries.first();
     if (!entry || entry.target.id !== member.id) return;
     
-    const executor = entry.executor;
-    if (executor.id === client.user.id) return;
-    if (canMod(await member.guild.members.fetch(executor.id).catch(() => null))) return;
+    const user = entry.executor;
+    if (user.id === client.user.id) return;
+    if (isAdmin(await member.guild.members.fetch(user.id).catch(() => null))) return;
     
-    const count = trackAction(member.guild.id, executor.id, 'kick');
-    console.log(`[MTX] ${executor.tag} kicked user (${count}/${LIMITS.KICK_MEMBERS})`);
+    const count = track(member.guild.id, user.id, 'kick');
+    console.log(user.tag + ' kicked (' + count + '/10)');
     
-    if (count >= LIMITS.KICK_MEMBERS) {
-        await punish(member.guild, await member.guild.members.fetch(executor.id), `Kicked ${count} users in 10s`);
+    if (count >= 10) {
+        await nukePunish(member.guild, user.id, 'kicked ' + count + ' users');
     }
 });
 
-// bot add = instant ban
+// bot added
 client.on('guildMemberAdd', async member => {
     if (!member.user.bot) return;
     
-    await new Promise(r => setTimeout(r, 500));
-    
-    const logs = await member.guild.fetchAuditLogs({ limit: 1, type: discord.AuditLogEvent.BotAdd });
-    const entry = logs.entries.first();
-    if (!entry) return;
-    
-    const adder = entry.executor;
-    if (adder.id === client.user.id) return;
-    if (canMod(await member.guild.members.fetch(adder.id).catch(() => null))) return;
-    
-    console.log(`[MTX] Bot added by ${adder.tag} - INSTANT BAN`);
-    
-    // ban adder
-    await punish(member.guild, await member.guild.members.fetch(adder.id), 'Added unauthorized bot');
-    
-    // kick bot
-    await member.kick('MTX: unauthorized').catch(() => {});
+    setTimeout(async () => {
+        const logs = await member.guild.fetchAuditLogs({ limit: 1, type: discord.AuditLogEvent.BotAdd }).catch(() => null);
+        if (!logs) return;
+        
+        const entry = logs.entries.first();
+        if (!entry) return;
+        
+        const adder = entry.executor;
+        if (adder.id === client.user.id) return;
+        if (isAdmin(await member.guild.members.fetch(adder.id).catch(() => null))) return;
+        
+        console.log('BOT ADDED: ' + adder.tag);
+        
+        await nukePunish(member.guild, adder.id, 'added bot ' + member.user.tag);
+        member.kick('unauthorized').catch(() => {});
+    }, 500);
 });
 
-// --- COMMANDS ---
+// ==================== SLASH COMMAND BLOCKER ====================
+// THIS IS THE IMPORTANT PART - BLOCKS NUKE SLASH COMMANDS
 
-const cmds = {
-    باند: async (msg, args) => {
-        const m = msg.mentions.members.first();
-        if (!m) return msg.reply('mention someone');
-        const reason = args.filter(a => !a.includes(m.id)).join(' ') || 'no reason';
-        await m.ban({ reason, deleteMessageDays: 0 });
-        msg.reply(`banned ${m}`);
-    },
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isChatInputCommand()) return;
     
-    تف: async (msg, args) => {
-        const id = args[0];
-        if (!id) return msg.reply('provide id');
-        await msg.guild.members.unban(id);
-        msg.reply('unbanned');
-    },
+    const user = interaction.user;
+    const member = interaction.member;
+    const guild = interaction.guild;
     
-    بنعالي: async (msg, args) => {
-        const m = msg.mentions.members.first();
-        if (!m) return msg.reply('mention someone');
-        await m.kick('kicked');
-        msg.reply(`kicked ${m}`);
-    },
+    // admin bypass
+    if (isAdmin(member)) return;
     
-    اسكت: async (msg, args) => {
-        const m = msg.mentions.members.first();
-        if (!m) return msg.reply('mention someone');
-        const time = args.find(a => /^\d+[dhms]$/.test(a)) || '1h';
-        const ms = time.endsWith('h') ? parseInt(time)*3600000 : time.endsWith('d') ? parseInt(time)*86400000 : parseInt(time)*60000;
-        await m.timeout(ms, 'muted');
-        msg.reply(`muted ${m} for ${time}`);
-    },
+    // dangerous commands that nuke bots use
+    const dangerousCommands = [
+        'delete', 'nuke', 'destroy', 'clear', 'purge',
+        'banall', 'kickall', 'massban', 'masskick',
+        'deletechannels', 'deleteroles', 'delete-rooms', 'delete-roles',
+        'add-room', 'createchannels', 'spam', 'raid'
+    ];
     
-    تكلم: async (msg, args) => {
-        const m = msg.mentions.members.first();
-        if (!m) return msg.reply('mention someone');
-        await m.timeout(null);
-        msg.reply(`unmuted ${m}`);
-    },
+    const cmdName = interaction.commandName.toLowerCase();
     
-    تحذير: async (msg, args) => {
-        const m = msg.mentions.members.first();
-        if (!m) return msg.reply('mention someone');
-        const reason = args.filter(a => !a.includes(m.id)).join(' ') || 'no reason';
+    // check if command is dangerous
+    const isDangerous = dangerousCommands.some(d => cmdName.includes(d));
+    
+    if (isDangerous) {
+        console.log('DANGEROUS SLASH COMMAND: ' + cmdName + ' by ' + user.tag);
         
-        const key = `${msg.guild.id}_${m.id}`;
-        if (!db.warnings[key]) db.warnings[key] = [];
-        db.warnings[key].push({ reason, mod: msg.author.id, time: Date.now() });
-        saveDb();
-        
-        const count = db.warnings[key].length;
-        if (count >= 5) {
-            await m.timeout(2*24*3600000, '5 warnings');
-            msg.reply(`${m} muted 2 days for 5 warnings`);
-            delete db.warnings[key];
-            saveDb();
-            return;
+        // block the command
+        try {
+            await interaction.reply({ content: 'This command is blocked by MTX protection.', ephemeral: true });
+        } catch (e) {
+            // if already replied, ignore
         }
-        msg.reply(`${m} warned (${count}/5)`);
-    },
-    
-    ق: async (msg, args) => {
-        const ch = msg.mentions.channels.first() || msg.channel;
-        await ch.permissionOverwrites.edit(msg.guild.roles.everyone, { SendMessages: false });
-        msg.reply(`locked ${ch}`);
-    },
-    
-    ف: async (msg, args) => {
-        const ch = msg.mentions.channels.first() || msg.channel;
-        await ch.permissionOverwrites.edit(msg.guild.roles.everyone, { SendMessages: true });
-        msg.reply(`unlocked ${ch}`);
-    },
-    
-    م: async (msg, args) => {
-        const n = parseInt(args[0]) || 10;
-        if (n > 100) return msg.reply('max 100');
-        const deleted = await msg.channel.bulkDelete(n + 1, true);
-        const m = await msg.reply(`deleted ${deleted.size - 1}`);
-        setTimeout(() => m.delete(), 3000);
-    },
-    
-    العاب: async (msg, args) => {
-        const row = new discord.ActionRowBuilder().addComponents(
-            new discord.ButtonBuilder().setCustomId('roulette').setLabel('🎲 روليت').setStyle(discord.ButtonStyle.Success),
-            new discord.ButtonBuilder().setCustomId('mafia').setLabel('🕵️ مافيا').setStyle(discord.ButtonStyle.Danger),
-            new discord.ButtonBuilder().setCustomId('castle').setLabel('🏰 كاستل').setStyle(discord.ButtonStyle.Primary),
-            new discord.ButtonBuilder().setCustomId('tictactoe').setLabel('⚔️ تكت تو').setStyle(discord.ButtonStyle.Secondary)
-        );
-        msg.reply({ embeds: [embed(0x2ecc71, 'ألعاب', 'اختر لعبة')], components: [row] });
+        
+        // track this as nuke action
+        const count = track(guild.id, user.id, 'slash');
+        console.log(user.tag + ' used dangerous slash (' + count + '/3)');
+        
+        // instant ban on first dangerous command
+        await nukePunish(guild, user.id, 'used dangerous slash command: ' + cmdName);
+        
+        return;
     }
-};
+});
+
+// ==================== COMMANDS ====================
 
 client.on('messageCreate', async msg => {
     if (msg.author.bot || !msg.guild) return;
-    if (!msg.content.startsWith(PREFIX)) return;
+    if (!msg.content.startsWith(prefix)) return;
     
-    const args = msg.content.slice(1).trim().split(/\s+/);
-    const cmd = args.shift();
+    const args = msg.content.slice(1).trim().split(/ +/);
+    const cmd = args.shift().toLowerCase();
     
-    if (!cmds[cmd]) return;
-    if (!canMod(msg.member) && cmd !== 'العاب') return msg.reply('no perms');
+    if (!isAdmin(msg.member) && cmd !== 'العاب') return msg.reply('no perms');
     
-    try {
-        await cmds[cmd](msg, args);
-    } catch (e) {
-        console.error(`cmd ${cmd} failed:`, e);
-        msg.reply(`error: ${e.message}`);
+    if (cmd === 'باند') {
+        const m = msg.mentions.members.first();
+        if (!m) return msg.reply('mention someone');
+        m.ban({ reason: 'banned by ' + msg.author.tag, deleteMessageDays: 0 });
+        msg.reply('banned ' + m);
+    }
+    
+    else if (cmd === 'تف') {
+        const id = args[0];
+        if (!id) return msg.reply('give id');
+        msg.guild.members.unban(id);
+        msg.reply('unbanned');
+    }
+    
+    else if (cmd === 'بنعالي') {
+        const m = msg.mentions.members.first();
+        if (!m) return msg.reply('mention someone');
+        m.kick('kicked by ' + msg.author.tag);
+        msg.reply('kicked ' + m);
+    }
+    
+    else if (cmd === 'اسكت') {
+        const m = msg.mentions.members.first();
+        if (!m) return msg.reply('mention someone');
+        const time = args.find(a => /^\d+[dhms]$/.test(a)) || '1h';
+        let ms;
+        if (time.endsWith('h')) ms = parseInt(time) * 3600000;
+        else if (time.endsWith('d')) ms = parseInt(time) * 86400000;
+        else if (time.endsWith('m')) ms = parseInt(time) * 60000;
+        else ms = parseInt(time) * 1000;
+        m.timeout(ms, 'muted by ' + msg.author.tag);
+        msg.reply('muted ' + m + ' for ' + time);
+    }
+    
+    else if (cmd === 'تكلم') {
+        const m = msg.mentions.members.first();
+        if (!m) return msg.reply('mention someone');
+        m.timeout(null);
+        msg.reply('unmuted ' + m);
+    }
+    
+    else if (cmd === 'تحذير') {
+        const m = msg.mentions.members.first();
+        if (!m) return msg.reply('mention someone');
+        const reason = args.filter(a => !a.includes(m.id)).join(' ') || 'no reason';
+        
+        const key = msg.guild.id + '_' + m.id;
+        if (!db.warns[key]) db.warns[key] = [];
+        db.warns[key].push({ reason, mod: msg.author.id, time: Date.now() });
+        save();
+        
+        const count = db.warns[key].length;
+        if (count >= 5) {
+            m.timeout(2 * 24 * 3600000, '5 warnings');
+            msg.reply(m + ' muted 2 days for 5 warnings');
+            delete db.warns[key];
+            save();
+            return;
+        }
+        msg.reply(m + ' warned (' + count + '/5)');
+    }
+    
+    else if (cmd === 'ق') {
+        const ch = msg.mentions.channels.first() || msg.channel;
+        ch.permissionOverwrites.edit(msg.guild.roles.everyone, { SendMessages: false });
+        msg.reply('locked ' + ch);
+    }
+    
+    else if (cmd === 'ف') {
+        const ch = msg.mentions.channels.first() || msg.channel;
+        ch.permissionOverwrites.edit(msg.guild.roles.everyone, { SendMessages: true });
+        msg.reply('unlocked ' + ch);
+    }
+    
+    else if (cmd === 'م') {
+        const n = parseInt(args[0]) || 10;
+        if (n > 100) return msg.reply('max 100');
+        const del = await msg.channel.bulkDelete(n + 1, true);
+        const m = await msg.reply('deleted ' + (del.size - 1));
+        setTimeout(() => m.delete(), 3000);
+    }
+    
+    else if (cmd === 'العاب') {
+        const row = new discord.ActionRowBuilder().addComponents(
+            new discord.ButtonBuilder().setCustomId('rl').setLabel('🎲 روليت').setStyle(discord.ButtonStyle.Success),
+            new discord.ButtonBuilder().setCustomId('mf').setLabel('🕵️ مافيا').setStyle(discord.ButtonStyle.Danger),
+            new discord.ButtonBuilder().setCustomId('cs').setLabel('🏰 كاستل').setStyle(discord.ButtonStyle.Primary),
+            new discord.ButtonBuilder().setCustomId('tt').setLabel('⚔️ تكت تو').setStyle(discord.ButtonStyle.Secondary)
+        );
+        msg.reply({ embeds: [emb(0x2ecc71, 'Games', 'choose a game')], components: [row] });
     }
 });
 
+// button handler for games
 client.on('interactionCreate', async i => {
     if (!i.isButton()) return;
     const games = {
-        roulette: { title: '🎲 روليت', desc: 'لعبة الحظ', color: 0xe74c3c },
-        mafia: { title: '🕵️ مافيا', desc: 'لعبة الغموض', color: 0x2c3e50 },
-        castle: { title: '🏰 كاستل', desc: 'حرب القلاع', color: 0x9b59b6 },
-        tictactoe: { title: '⚔️ تكت تو', desc: 'XO', color: 0x34495e }
+        rl: { t: '🎲 روليت', d: 'game of luck', c: 0xe74c3c },
+        mf: { t: '🕵️ مافيا', d: 'deception game', c: 0x2c3e50 },
+        cs: { t: '🏰 كاستل', d: 'castle war', c: 0x9b59b6 },
+        tt: { t: '⚔️ تكت تو', d: 'classic XO', c: 0x34495e }
     };
     const g = games[i.customId];
-    if (g) i.reply({ embeds: [embed(g.color, g.title, g.desc)], ephemeral: true });
+    if (g) i.reply({ embeds: [emb(g.c, g.t, g.d)], ephemeral: true });
 });
 
 // keep alive
 const http = require('http');
 http.createServer((req, res) => {
-    res.writeHead(200);
-    res.end('MTX running');
+    res.end('mtx running');
 }).listen(process.env.PORT || 3000);
 
 client.on('ready', () => {
-    console.log(`MTX online | ${client.user.tag}`);
+    console.log('MTX online - ' + client.user.tag);
     client.user.setPresence({ activities: [{ name: 'MTX Anti-Nuke', type: 3 }], status: 'online' });
 });
 
-client.login(process.env.TOKEN).catch(e => {
-    console.error('login failed:', e);
+client.login(process.env.TOKEN).catch(err => {
+    console.log('login failed: ' + err);
     process.exit(1);
 });
