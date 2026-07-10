@@ -1,5 +1,5 @@
 // ╔═══════════════════════════════════════════════════════════════════════╗
-// ║  🤖 MTX BOT v6.5 - Uses database.js for persistent storage           ║
+// ║  🤖 MTX BOT v7.0 - MongoDB Atlas Persistent Storage                  ║
 // ╚═══════════════════════════════════════════════════════════════════════╝
 
 const { 
@@ -9,10 +9,9 @@ const {
     SlashCommandBuilder, ChannelType
 } = require('discord.js');
 const http = require('http');
-const fs = require('fs');
 
-// Import database system
-const { WarningDB, ConfigDB } = require('./database.js');
+// Import database system (MongoDB)
+const { WarningDB, ConfigDB, TicketDB } = require('./database.js');
 
 const CONFIG = {
     CMDS: {
@@ -68,33 +67,57 @@ class Embeds {
 class TicketSystem {
     constructor(client) {
         this.client = client;
-        this.ticketsFile = 'tickets_data.json';
-        this.cfgFile = 'servers_config.json';
-        this.cfg = fs.existsSync(this.cfgFile) ? JSON.parse(fs.readFileSync(this.cfgFile, 'utf8')) : {};
-        this.ticketsData = fs.existsSync(this.ticketsFile) ? JSON.parse(fs.readFileSync(this.ticketsFile, 'utf8')) : {};
         this.tickets = new Map();
+        this.cfg = {};
         this.counters = {};
     }
-    saveCfg() { fs.writeFileSync(this.cfgFile, JSON.stringify(this.cfg, null, 2)); }
-    saveTickets() { fs.writeFileSync(this.ticketsFile, JSON.stringify(this.ticketsData, null, 2)); }
-    load() {
-        Object.entries(this.ticketsData).forEach(([channelId, ticketData]) => { this.tickets.set(channelId, ticketData); });
-        Object.values(this.ticketsData).forEach(t => { if (t.g && t.num) { if (!this.counters[t.g]) this.counters[t.g] = 0; if (t.num > this.counters[t.g]) this.counters[t.g] = t.num; } });
-    }
-    getOptions(guildId) { return this.cfg[guildId]?.ticketOptions || []; }
-    generateValue(label) { return label.trim().replace(/\s+/g, '_'); }
 
-    // Warnings now use database.js
-    getWarnings(guildId, userId) {
+    async load() {
+        // Load tickets from MongoDB
+        const { map, data } = await TicketDB.getAllTickets();
+        this.tickets = map;
+
+        // Load counters from MongoDB
+        this.counters = await TicketDB.getCounters();
+
+        // Load config for all guilds
+        // Config is loaded on-demand per guild
+        console.log(`✅ [MTX] Loaded ${this.tickets.size} tickets from MongoDB`);
+    }
+
+    async getConfig(guildId) {
+        if (!this.cfg[guildId]) {
+            this.cfg[guildId] = await ConfigDB.getTicketConfig(guildId) || {};
+        }
+        return this.cfg[guildId];
+    }
+
+    async saveConfig(guildId) {
+        // Config is saved automatically in MongoDB, no need for manual save
+    }
+
+    getOptions(guildId) { 
+        return this.cfg[guildId]?.ticketOptions || []; 
+    }
+
+    generateValue(label) { 
+        return label.trim().replace(/\s+/g, '_'); 
+    }
+
+    // Warnings now use database.js (MongoDB)
+    async getWarnings(guildId, userId) {
         return WarningDB.getWarnings(userId, guildId);
     }
-    addWarning(guildId, userId, warning) {
+
+    async addWarning(guildId, userId, warning) {
         return WarningDB.addWarning(userId, guildId, warning.reason, { id: warning.moderatorId, tag: warning.moderatorTag });
     }
-    clearWarnings(guildId, userId) {
-        WarningDB.clearWarnings(userId, guildId);
+
+    async clearWarnings(guildId, userId) {
+        await WarningDB.clearWarnings(userId, guildId);
     }
-    clearWarningByIndex(guildId, userId, index) {
+
+    async clearWarningByIndex(guildId, userId, index) {
         return WarningDB.removeWarning(userId, guildId, index);
     }
 }
@@ -109,17 +132,20 @@ class MTXBot extends Client {
         this.startTime = new Date();
         this.setupEvents();
     }
+
     setupEvents() {
         this.once('ready', () => this.onReady());
         this.on('messageCreate', (m) => this.onMessage(m));
         this.on('interactionCreate', (i) => this.onInteraction(i));
     }
+
     async onReady() {
-        console.log(`\n    ╔═══════════════════════════════════════════════════╗\n    ║                                                   ║\n    ║        🤖 MTX BOT v6.5 - ONLINE                   ║\n    ║        Uses database.js for persistent storage      ║\n    ║        السيرفرات: ${this.guilds.cache.size.toString().padEnd(27)}║\n    ║                                                   ║\n    ╚═══════════════════════════════════════════════════╝\n        `);
+        console.log(`\n    ╔═══════════════════════════════════════════════════╗\n    ║                                                   ║\n    ║        🤖 MTX BOT v7.0 - ONLINE                   ║\n    ║        Uses MongoDB Atlas for persistent storage    ║\n    ║        السيرفرات: ${this.guilds.cache.size.toString().padEnd(27)}║\n    ║                                                   ║\n    ╚═══════════════════════════════════════════════════╝\n        `);
         await this.user.setPresence({ activities: [{ name: '🎫 التكتات | .العاب', type: 3 }], status: 'online' });
-        this.ticketSystem.load();
+        await this.ticketSystem.load();
         await this.registerSlashCommands();
     }
+
     async registerSlashCommands() {
         const cmds = [
             new SlashCommandBuilder().setName('setup-ticket').setDescription('إعداد نظام التكتات')
@@ -133,13 +159,19 @@ class MTXBot extends Client {
             new SlashCommandBuilder().setName('log').setDescription('تحديد روم اللوق').addChannelOption(o => o.setName('channel').setDescription('روم اللوق').setRequired(true).addChannelTypes(ChannelType.GuildText)),
             new SlashCommandBuilder().setName('status').setDescription('حالة البوت')
         ];
-        try { await this.application.commands.set(cmds); console.log('✅ [MTX] تم تسجيل السلاش كوماندات'); } catch(e) { console.error('❌ [MTX] خطأ في السلاش كوماندات:', e); }
+        try { 
+            await this.application.commands.set(cmds); 
+            console.log('✅ [MTX] تم تسجيل السلاش كوماندات'); 
+        } catch(e) { 
+            console.error('❌ [MTX] خطأ في السلاش كوماندات:', e); 
+        }
     }
 
     async onMessage(message) {
         if (message.author.bot || !message.guild) return;
         await this.handleCommand(message);
     }
+
     async handleCommand(message) {
         const content = message.content.trim();
         const parts = content.split(/\s+/);
@@ -149,7 +181,9 @@ class MTXBot extends Client {
         const allCmds = [...adminCmds, CONFIG.CMDS.WARNINGS, CONFIG.CMDS.GAMES];
         if (!allCmds.includes(cmd)) return;
         const isAdmin = message.member.permissions.has(PermissionsBitField.Flags.Administrator) || message.author.id === message.guild.ownerId;
-        if (adminCmds.includes(cmd) && !isAdmin) { return message.reply({ embeds: [Embeds.error('صلاحيات', '⛔ بس الأدمن يقدر يستخدم هذا الأمر!')] }); }
+        if (adminCmds.includes(cmd) && !isAdmin) { 
+            return message.reply({ embeds: [Embeds.error('صلاحيات', '⛔ بس الأدمن يقدر يستخدم هذا الأمر!')] }); 
+        }
         switch(cmd) {
             case CONFIG.CMDS.BAN: case CONFIG.CMDS.BAN2: await this.cmdBan(message, args); break;
             case CONFIG.CMDS.UNBAN: await this.cmdUnban(message, args); break;
@@ -224,15 +258,19 @@ class MTXBot extends Client {
     async onInteraction(interaction) {
         const g = interaction.guildId;
         const ts = this.ticketSystem;
+
         if (interaction.isCommand()) {
             const isAdmin = interaction.member.permissions.has(PermissionsBitField.Flags.Administrator);
             if (!isAdmin) return interaction.reply({ content: '❌ تحتاج صلاحية Administrator', ephemeral: true });
+
             if (interaction.commandName === 'setup-ticket') {
                 const logs = interaction.options.getChannel('logs');
                 const category = interaction.options.getChannel('category');
                 const role = interaction.options.getRole('role');
-                ts.cfg[g] = { ...ts.cfg[g], logsId: logs.id, categoryId: category.id, roleId: role.id };
-                ts.saveCfg();
+
+                ts.cfg[g] = { logsId: logs.id, categoryId: category.id, roleId: role.id, ticketOptions: ts.cfg[g]?.ticketOptions || [] };
+                await ConfigDB.setTicketConfig(g, { logsId: logs.id, categoryId: category.id, roleId: role.id });
+
                 await this.sendLog(interaction.guild, Embeds.logEmbed('⚙️ إعداد نظام التكتات', `${interaction.user} قام بإعداد نظام التكتات!`, 0x3498db, [
                     { name: '📋 لوقات', value: `${logs}`, inline: true }, { name: '📁 كاتقوري', value: `${category}`, inline: true }, { name: '👮 رتبة', value: role.name, inline: true }
                 ]));
@@ -240,8 +278,10 @@ class MTXBot extends Client {
                     { name: '📋 لوقات', value: `${logs}`, inline: true }, { name: '📁 كاتقوري', value: `${category}`, inline: true }, { name: '👮 رتبة', value: role.name, inline: true }
                 ).setColor(0x00FF00)], ephemeral: true });
             }
+
             if (interaction.commandName === 'ticket-panel') {
-                if (!ts.cfg[g]?.roleId) return interaction.reply({ content: '❌ شغل /setup-ticket أول', ephemeral: true });
+                const config = await ts.getConfig(g);
+                if (!config?.roleId) return interaction.reply({ content: '❌ شغل /setup-ticket أول', ephemeral: true });
                 const options = ts.getOptions(g);
                 if (options.length === 0) return interaction.reply({ content: '❌ ما فيه خيارات! ضيف خيارات بـ /add-option', ephemeral: true });
                 const row = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('ticket_select').setPlaceholder('اختر نوع التكت...').addOptions(options));
@@ -249,6 +289,7 @@ class MTXBot extends Client {
                 await this.sendLog(interaction.guild, Embeds.logEmbed('🎫 إنشاء لوحة تكتات', `${interaction.user} قام بإنشاء لوحة التكتات في ${interaction.channel}!`, 0x2ecc71, [{ name: '📁 الروم', value: `${interaction.channel}`, inline: true }]));
                 return interaction.reply({ content: '✅ تم إنشاء اللوحة', ephemeral: true });
             }
+
             if (interaction.commandName === 'add-option') {
                 const label = interaction.options.getString('label');
                 const value = ts.generateValue(label);
@@ -257,10 +298,11 @@ class MTXBot extends Client {
                 if (ts.cfg[g].ticketOptions.length >= 25) return interaction.reply({ content: '❌ الحد الأقصى 25 خيار', ephemeral: true });
                 if (ts.cfg[g].ticketOptions.find(o => o.value === value)) return interaction.reply({ content: '❌ الخيار موجود مسبقاً', ephemeral: true });
                 ts.cfg[g].ticketOptions.push({ label, value });
-                ts.saveCfg();
+                await ConfigDB.addTicketOption(g, label, value);
                 await this.sendLog(interaction.guild, Embeds.logEmbed('➕ إضافة خيار تكت', `${interaction.user} أضاف خيار تكت جديد!`, 0x2ecc71, [{ name: '📝 الخيار', value: label, inline: true }]));
                 return interaction.reply({ content: `✅ تم إضافة **${label}**`, ephemeral: true });
             }
+
             if (interaction.commandName === 'remove-option') {
                 const label = interaction.options.getString('label');
                 const value = ts.generateValue(label);
@@ -269,21 +311,24 @@ class MTXBot extends Client {
                 if (!optionToRemove) return interaction.reply({ content: `❌ الخيار "${label}" غير موجود`, ephemeral: true });
                 ts.cfg[g].ticketOptions = ts.cfg[g].ticketOptions.filter(o => o.value !== optionToRemove.value);
                 if (ts.cfg[g].ticketOptions.length === 0) delete ts.cfg[g].ticketOptions;
-                ts.saveCfg();
+                await ConfigDB.removeTicketOption(g, optionToRemove.value);
                 await this.sendLog(interaction.guild, Embeds.logEmbed('➖ حذف خيار تكت', `${interaction.user} حذف خيار تكت!`, 0xe74c3c, [{ name: '📝 الخيار', value: optionToRemove.label, inline: true }]));
                 return interaction.reply({ content: `✅ تم حذف **${optionToRemove.label}**`, ephemeral: true });
             }
+
             if (interaction.commandName === 'list-options') {
                 const opts = ts.getOptions(g);
                 if (opts.length === 0) return interaction.reply({ content: '❌ ما فيه خيارات', ephemeral: true });
                 return interaction.reply({ embeds: [new EmbedBuilder().setTitle('📋 الخيارات الحالية').setDescription(opts.map((o, i) => `${i+1}. **${o.label}**`).join('\n')).setFooter({ text: `${opts.length}/25` }).setColor(0x0099FF)], ephemeral: true });
             }
+
             if (interaction.commandName === 'log') {
                 const ch = interaction.options.getChannel('channel');
-                ConfigDB.setLogChannel(g, ch.id);
+                await ConfigDB.setLogChannel(g, ch.id);
                 await interaction.reply({ embeds: [Embeds.success('إعدادات اللوق', `📋 **${ch}** تم تحديده كروم للوق!`)] });
                 await this.sendLog(interaction.guild, Embeds.logEmbed('📋 تحديد روم اللوق', `${interaction.user} حدد روم اللوق!`, 0x3498db, [{ name: '📁 الروم', value: `${ch}`, inline: true }]));
             }
+
             if (interaction.commandName === 'status') {
                 const uptime = new Date() - this.startTime;
                 const h = Math.floor(uptime / 3600000), m = Math.floor((uptime % 3600000) / 60000);
@@ -291,73 +336,99 @@ class MTXBot extends Client {
                 await interaction.reply({ embeds: [embed] });
             }
         }
+
         if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_select') {
-            const config = ts.cfg[g];
+            const config = await ts.getConfig(g);
             if (!config?.roleId) return interaction.reply({ content: '❌ شغل /setup-ticket أول', ephemeral: true });
+
             const userTickets = [...ts.tickets.values()].filter(tk => tk.g === g && tk.owner === interaction.user.id);
-            const openTickets = userTickets.filter(tk => { const chId = [...ts.tickets.entries()].find(([_, v]) => v === tk)?.[0]; return interaction.guild.channels.cache.has(chId); });
+            const openTickets = userTickets.filter(tk => interaction.guild.channels.cache.has([...ts.tickets.entries()].find(([_, v]) => v === tk)?.[0]));
+
             if (openTickets.length > 0) {
-                const ticketChannels = openTickets.map((tk) => { const chId = [...ts.tickets.entries()].find(([_, v]) => v === tk)?.[0]; return `**#${tk.num}** (<#${chId}>)`; }).join('\n');
+                const ticketChannels = openTickets.map((tk) => { 
+                    const chId = [...ts.tickets.entries()].find(([_, v]) => v === tk)?.[0]; 
+                    return `**#${tk.num}** (<#${chId}>)`; 
+                }).join('\n');
                 return interaction.reply({ embeds: [new EmbedBuilder().setTitle('❌ عندك تكت مفتوح بالفعل').setDescription(`يجب إغلاق التكت الأول قبل فتح واحد جديد:\n${ticketChannels}`).setColor(0xFF0000)], ephemeral: true });
             }
+
             const category = interaction.values[0];
             const label = ts.getOptions(g).find(o => o.value === category)?.label || category;
             const userId = interaction.user.id;
-            if (!ts.counters[g]) ts.counters[g] = 0;
-            ts.counters[g]++;
-            const num = ts.counters[g];
-            const channel = await interaction.guild.channels.create({ name: `ticket-${num}`, type: ChannelType.GuildText, parent: config.categoryId || null, permissionOverwrites: [
-                { id: g, deny: [PermissionsBitField.Flags.ViewChannel] },
-                { id: userId, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
-                { id: config.roleId, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] }
-            ]});
+
+            const num = await ConfigDB.incrementTicketCounter(g);
+
+            const channel = await interaction.guild.channels.create({ 
+                name: `ticket-${num}`, 
+                type: ChannelType.GuildText, 
+                parent: config.categoryId || null, 
+                permissionOverwrites: [
+                    { id: g, deny: [PermissionsBitField.Flags.ViewChannel] },
+                    { id: userId, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
+                    { id: config.roleId, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] }
+                ]
+            });
+
             const ticketObj = { g, num, owner: userId, claimed: null, label, users: [userId] };
             ts.tickets.set(channel.id, ticketObj);
-            ts.ticketsData[channel.id] = ticketObj;
-            ts.saveTickets();
+            await TicketDB.createTicket(channel.id, g, num, userId, label);
+
             const btns = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('claim').setLabel('✋ استلام').setStyle(ButtonStyle.Primary),
                 new ButtonBuilder().setCustomId('close').setLabel('🔴 إغلاق').setStyle(ButtonStyle.Danger),
                 new ButtonBuilder().setCustomId('adduser').setLabel('➕ إضافة شخص').setStyle(ButtonStyle.Secondary)
             );
+
             await channel.send(`<@&${config.roleId}>`);
             await channel.send({ embeds: [new EmbedBuilder().setTitle('🎫 تكت جديد').setDescription(`مرحباً ${interaction.user}`).addFields({ name: 'النوع', value: label, inline: true }, { name: 'صاحب التكت', value: interaction.user.tag, inline: true }).setColor(0x00FF00).setFooter({ text: `التكت #${num} | اضغط على الأزرار أدناه` })], components: [btns] });
+
             const logsChannel = interaction.guild.channels.cache.get(config.logsId);
             if (logsChannel) await logsChannel.send({ embeds: [new EmbedBuilder().setTitle('🟢 تكت جديد').addFields({ name: 'رقم', value: `#${num}`, inline: true }, { name: 'صاحب', value: interaction.user.tag, inline: true }, { name: 'القناة', value: `${channel}`, inline: true }).setColor(0x00FF00)] });
+
             return interaction.reply({ content: `✅ تم فتح التكت: ${channel}`, ephemeral: true });
         }
+
         if (interaction.isButton()) {
             const t = ts.tickets.get(interaction.channel.id);
             if (!t) return interaction.reply({ content: '❌ ليست قناة تكت', ephemeral: true });
-            const config = ts.cfg[t.g];
+            const config = await ts.getConfig(t.g);
+
             if (interaction.customId === 'claim') {
                 if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) return interaction.reply({ content: '❌ أدمن فقط', ephemeral: true });
                 if (t.claimed) return interaction.reply({ content: `⚠️ مستلم من <@${t.claimed}>`, ephemeral: true });
                 t.claimed = interaction.user.id;
-                ts.ticketsData[interaction.channel.id] = t;
-                ts.saveTickets();
+                await TicketDB.updateTicket(interaction.channel.id, { claimed: interaction.user.id });
                 await this.sendLog(interaction.guild, Embeds.logEmbed('✋ استلام تكت', `${interaction.user} استلم التكت #${t.num}!`, 0x3498db, [{ name: '🎫 التكت', value: `#${t.num}`, inline: true }, { name: '👤 صاحب التكت', value: `<@${t.owner}>`, inline: true }]));
                 await interaction.reply({ embeds: [new EmbedBuilder().setTitle('✅ تم الاستلام').setDescription(`استلم التكت: ${interaction.user}`).setColor(0x0099FF)] });
             }
             else if (interaction.customId === 'close') {
                 const isAdmin = interaction.member.permissions.has(PermissionsBitField.Flags.Administrator);
                 const isClaimer = t.claimed && t.claimed === interaction.user.id;
-                if (!isAdmin && !isClaimer) { return interaction.reply({ content: '❌ بس الأدمن أو اللي استلم التكت يقدر يغلقه! صاحب التكت ما يقدر.', ephemeral: true }); }
+                if (!isAdmin && !isClaimer) { 
+                    return interaction.reply({ content: '❌ بس الأدمن أو اللي استلم التكت يقدر يغلقه! صاحب التكت ما يقدر.', ephemeral: true }); 
+                }
                 const closedAt = new Date().toLocaleString('ar-SA');
                 await interaction.reply({ embeds: [new EmbedBuilder().setTitle('🔴 تم الإغلاق').setDescription(`أغلقه ${interaction.user.tag}`).setColor(0xFF0000)] });
                 await this.users.fetch(t.owner).then(u => u.send({ embeds: [new EmbedBuilder().setTitle('🔴 تم إغلاق تكتك').setColor(0xFF0000)] })).catch(() => {});
                 await this.sendLog(interaction.guild, Embeds.logEmbed('🔴 إغلاق تكت', `${interaction.user} أغلق التكت #${t.num}!`, 0xe74c3c, [{ name: '🎫 التكت', value: `#${t.num}`, inline: true }, { name: '👤 صاحب التكت', value: `<@${t.owner}>`, inline: true }, { name: '🕐 الوقت', value: closedAt, inline: true }]));
-                setTimeout(() => { interaction.channel.delete().catch(() => {}); ts.tickets.delete(interaction.channel.id); delete ts.ticketsData[interaction.channel.id]; ts.saveTickets(); }, 5000);
+                setTimeout(async () => { 
+                    await interaction.channel.delete().catch(() => {}); 
+                    ts.tickets.delete(interaction.channel.id); 
+                    await TicketDB.deleteTicket(interaction.channel.id);
+                }, 5000);
             }
             else if (interaction.customId === 'adduser') {
                 const isAdmin = interaction.member.permissions.has(PermissionsBitField.Flags.Administrator);
                 const isClaimer = t.claimed && t.claimed === interaction.user.id;
-                if (!isAdmin && !isClaimer) { return interaction.reply({ content: '❌ بس الأدمن أو اللي استلم التكت يقدر يضيف أشخاص! صاحب التكت ما يقدر.', ephemeral: true }); }
+                if (!isAdmin && !isClaimer) { 
+                    return interaction.reply({ content: '❌ بس الأدمن أو اللي استلم التكت يقدر يضيف أشخاص! صاحب التكت ما يقدر.', ephemeral: true }); 
+                }
                 const modal = new ModalBuilder().setCustomId('adduser_modal').setTitle('إضافة شخص للتكت');
                 modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('uid').setLabel('اكتب ID أو اسم المستخدم').setStyle(TextInputStyle.Short).setPlaceholder('مثال: @username أو 123456789')));
                 await interaction.showModal(modal);
             }
         }
+
         if (interaction.isModalSubmit() && interaction.customId === 'adduser_modal') {
             const t = ts.tickets.get(interaction.channel.id);
             if (!t) return interaction.reply({ content: '❌ حدث خطأ', ephemeral: true });
@@ -371,20 +442,24 @@ class MTXBot extends Client {
                 const user = await this.users.fetch(userId);
                 await interaction.channel.permissionOverwrites.create(userId, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true, AttachFiles: true });
                 t.users.push(userId);
-                ts.ticketsData[interaction.channel.id] = t;
-                ts.saveTickets();
+                await TicketDB.addUserToTicket(interaction.channel.id, userId);
                 await this.sendLog(interaction.guild, Embeds.logEmbed('➕ إضافة شخص للتكت', `${interaction.user} أضاف ${user.tag} للتكت #${t.num}!`, 0x2ecc71, [{ name: '🎫 التكت', value: `#${t.num}`, inline: true }, { name: '➕ المضاف', value: user.tag, inline: true }]));
                 await interaction.reply({ embeds: [new EmbedBuilder().setTitle('✅ تمت الإضافة').setDescription(`تمت إضافة ${user.tag} للتكت`).setColor(0x00FF00)] });
-            } catch (e) { console.error(e); await interaction.reply({ content: '❌ حدث خطأ', ephemeral: true }); }
+            } catch (e) { 
+                console.error(e); 
+                await interaction.reply({ content: '❌ حدث خطأ', ephemeral: true }); 
+            }
         }
     }
 
-    // ⚙️ ADMIN COMMANDS (ALL LOGGED + uses database.js)
+    // ⚙️ ADMIN COMMANDS (ALL LOGGED + uses MongoDB database.js)
     async cmdBan(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
         if (member.id === m.guild.ownerId) return m.reply({ embeds: [Embeds.error('خطأ', 'ما تقدر تبند الأونر!')] });
-        if (member.roles.highest.position >= m.member.roles.highest.position && m.author.id !== m.guild.ownerId) { return m.reply({ embeds: [Embeds.error('خطأ', 'رتبته أعلى منك!')] }); }
+        if (member.roles.highest.position >= m.member.roles.highest.position && m.author.id !== m.guild.ownerId) { 
+            return m.reply({ embeds: [Embeds.error('خطأ', 'رتبته أعلى منك!')] }); 
+        }
         const timeArg = args.find(a => /^\d+[dhms]$/.test(a));
         const reason = args.filter(a => a !== timeArg && !a.includes(member.id)).join(' ') || 'غير محدد';
         try {
@@ -401,6 +476,7 @@ class MTXBot extends Client {
             if (timeArg) { const ms = this.parseTime(timeArg); if (ms) setTimeout(() => m.guild.members.unban(member.id, 'انتهاء الوقت').catch(() => {}), ms); }
         } catch(e) { m.reply({ embeds: [Embeds.error('خطأ', e.message)] }); }
     }
+
     async cmdUnban(m, args) {
         const uid = args[0];
         if (!uid || /^\d+$/.test(uid) === false) return m.reply({ embeds: [Embeds.error('خطأ', 'حط ايدي صحيح!')] });
@@ -411,6 +487,7 @@ class MTXBot extends Client {
             await this.sendLog(m.guild, Embeds.logAction('فك باند', m.author, user, 'فك الباند'));
         } catch(e) { m.reply({ embeds: [Embeds.error('خطأ', e.message)] }); }
     }
+
     async cmdKick(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
@@ -428,6 +505,7 @@ class MTXBot extends Client {
             await this.sendLog(m.guild, Embeds.logAction('طرد', m.author, member.user, reason));
         } catch(e) { m.reply({ embeds: [Embeds.error('خطأ', e.message)] }); }
     }
+
     async cmdMute(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
@@ -447,6 +525,7 @@ class MTXBot extends Client {
             await this.sendLog(m.guild, Embeds.logAction('كتم', m.author, member.user, reason, { 'المدة': timeArg }));
         } catch(e) { m.reply({ embeds: [Embeds.error('خطأ', e.message)] }); }
     }
+
     async cmdUnmute(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
@@ -456,11 +535,12 @@ class MTXBot extends Client {
             await this.sendLog(m.guild, Embeds.logAction('فك كتم', m.author, member.user, 'فك الكتم'));
         } catch(e) { m.reply({ embeds: [Embeds.error('خطأ', e.message)] }); }
     }
+
     async cmdWarn(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
         const reason = args.filter(a => !a.includes(member.id)).join(' ') || 'غير محدد';
-        const result = WarningDB.addWarning(member.id, m.guild.id, reason, m.author);
+        const result = await WarningDB.addWarning(member.id, m.guild.id, reason, m.author);
         const warnNumber = result.total;
         try {
             const dmEmbed = new EmbedBuilder().setTitle('⚠️ تم تحذيرك').setDescription(`لقد تم تحذيرك في سيرفر **${m.guild.name}**`).addFields(
@@ -472,10 +552,13 @@ class MTXBot extends Client {
         await m.reply({ embeds: [embed] });
         await this.sendLog(m.guild, Embeds.logAction('تحذير', m.author, member.user, reason, { 'رقم التحذير': `#${warnNumber}` }));
     }
+
     async cmdWarnings(m, args) {
         const member = m.mentions.members.first() || m.member;
-        const warnings = WarningDB.getWarnings(member.id, m.guild.id);
-        if (warnings.length === 0) { return m.reply({ embeds: [Embeds.info('تحذيرات', `**${member}** — ما عنده تحذيرات! ✅`)] }); }
+        const warnings = await WarningDB.getWarnings(member.id, m.guild.id);
+        if (warnings.length === 0) { 
+            return m.reply({ embeds: [Embeds.info('تحذيرات', `**${member}** — ما عنده تحذيرات! ✅`)] }); 
+        }
         const embed = new EmbedBuilder().setTitle(`⚠️ تحذيرات ${member.user.tag}`).setColor(CONFIG.COLORS.WARN).setThumbnail(member.user.displayAvatarURL()).setFooter({ text: `إجمالي التحذيرات: ${warnings.length}` }).setTimestamp();
         warnings.forEach((warn, index) => {
             const warnDate = new Date(warn.timestamp);
@@ -484,16 +567,22 @@ class MTXBot extends Client {
         });
         await m.reply({ embeds: [embed] });
     }
+
     async cmdClearWarn(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
         const index = parseInt(args.find(a => /^\d+$/.test(a) && !a.includes(member.id)));
         if (index && index > 0) {
-            const success = WarningDB.removeWarning(member.id, m.guild.id, index - 1);
-            if (success) { m.reply({ embeds: [Embeds.success('تم المسح', `🗑️ تم مسح التحذير رقم **${index}** لـ **${member}**!`)] }); await this.sendLog(m.guild, Embeds.logAction('مسح تحذير', m.author, member.user, `مسح تحذير رقم ${index}`)); }
-            else { m.reply({ embeds: [Embeds.error('خطأ', `ما فيه تحذير رقم **${index}**!`)] }); }
+            const success = await WarningDB.removeWarning(member.id, m.guild.id, index - 1);
+            if (success) { 
+                m.reply({ embeds: [Embeds.success('تم المسح', `🗑️ تم مسح التحذير رقم **${index}** لـ **${member}**!`)] }); 
+                await this.sendLog(m.guild, Embeds.logAction('مسح تحذير', m.author, member.user, `مسح تحذير رقم ${index}`)); 
+            }
+            else { 
+                m.reply({ embeds: [Embeds.error('خطأ', `ما فيه تحذير رقم **${index}**!`)] }); 
+            }
         } else {
-            WarningDB.clearWarnings(member.id, m.guild.id);
+            await WarningDB.clearWarnings(member.id, m.guild.id);
             m.reply({ embeds: [Embeds.success('تم المسح', `🗑️ تم مسح جميع تحذيرات **${member}**!`)] });
             await this.sendLog(m.guild, Embeds.logAction('مسح تحذيرات', m.author, member.user, 'مسح'));
         }
@@ -512,6 +601,7 @@ class MTXBot extends Client {
             await this.sendLog(m.guild, Embeds.logAction('قفل روم', m.author, m.author, 'قفل', { 'الروم': ch.toString() }));
         } catch(e) { m.reply({ embeds: [Embeds.error('خطأ', e.message)] }); }
     }
+
     async cmdUnlock(m, args) {
         let ch = m.mentions.channels.first();
         if (!ch && args[0]) { const idMatch = args[0].match(/\d+/); if (idMatch) ch = m.guild.channels.cache.get(idMatch[0]); }
@@ -525,6 +615,7 @@ class MTXBot extends Client {
             await this.sendLog(m.guild, Embeds.logAction('فتح روم', m.author, m.author, 'فتح', { 'الروم': ch.toString() }));
         } catch(e) { m.reply({ embeds: [Embeds.error('خطأ', e.message)] }); }
     }
+
     async cmdPurge(m, args) {
         const amount = parseInt(args[0]) || 10;
         if (amount > 100) return m.reply({ embeds: [Embeds.error('خطأ', 'الحد الأقصى 100!')] });
@@ -536,6 +627,7 @@ class MTXBot extends Client {
             await this.sendLog(m.guild, Embeds.logAction('مسح رسائل', m.author, m.author, 'مسح', { 'العدد': deleted.size - 1 }));
         } catch(e) { m.reply({ embeds: [Embeds.error('خطأ', e.message)] }); }
     }
+
     async cmdSlowmode(m, args) {
         const sec = parseInt(args[0]) || 0;
         if (isNaN(sec) || sec < 0) return m.reply({ embeds: [Embeds.error('خطأ', 'حط رقم صحيح! مثال: سلو 10')] });
@@ -545,6 +637,7 @@ class MTXBot extends Client {
             m.reply({ embeds: [embed] });
         } catch(e) { m.reply({ embeds: [Embeds.error('خطأ', e.message)] }); }
     }
+
     async cmdGames(m) {
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('game_roulette').setLabel('🎲 روليت').setStyle(ButtonStyle.Success),
@@ -556,6 +649,7 @@ class MTXBot extends Client {
             .setColor(CONFIG.COLORS.SUCCESS).setFooter({ text: `طلبت بواسطة ${m.author.tag}`, iconURL: m.author.displayAvatarURL() }).setTimestamp();
         await m.reply({ embeds: [embed], components: [row] });
     }
+
     parseTime(str) {
         if (!str) return null;
         const match = str.match(/^(\d+)([dhms])$/);
@@ -563,8 +657,9 @@ class MTXBot extends Client {
         const value = parseInt(match[1]);
         switch(match[2]) { case 'd': return value * 86400000; case 'h': return value * 3600000; case 'm': return value * 60000; case 's': return value * 1000; default: return null; }
     }
+
     async sendLog(guild, embed) {
-        const chId = ConfigDB.getLogChannel(guild.id);
+        const chId = await ConfigDB.getLogChannel(guild.id);
         if (!chId) return;
         const ch = guild.channels.cache.get(chId);
         if (ch) try { await ch.send({ embeds: [embed] }); } catch(e) {}
@@ -580,9 +675,17 @@ const server = http.createServer((req, res) => {
         .online { color: #2ecc71; font-size: 1.5em; }
     </style></head><body><div class="container"><h1>🤖 MTX Bot</h1><div class="status"><p class="online">🟢 Online</p><p>البوت شغال بنجاح!</p></div></div></body></html>`);
 });
+
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => { console.log(`🌐 [MTX] Keep-Alive Server شغال على البورت ${PORT}`); });
+server.listen(PORT, () => { 
+    console.log(`🌐 [MTX] Keep-Alive Server شغال على البورت ${PORT}`); 
+});
 
 const bot = new MTXBot();
-async function start() { await bot.login(process.env.TOKEN); }
-start().catch(err => { console.error('❌ [MTX] خطأ فادح:', err); process.exit(1); });
+async function start() { 
+    await bot.login(process.env.TOKEN); 
+}
+start().catch(err => { 
+    console.error('❌ [MTX] خطأ فادح:', err); 
+    process.exit(1); 
+});
