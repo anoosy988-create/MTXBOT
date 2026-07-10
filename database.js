@@ -10,7 +10,6 @@ function save(data) {
     fs.writeFileSync(FILE, JSON.stringify(data, null, 2));
 }
 
-// warnings
 async function addWarn(uid, gid, reason, mod) {
     const data = load();
     if (!data.warnings[uid]) data.warnings[uid] = {};
@@ -39,7 +38,6 @@ async function delWarn(uid, gid, idx) {
     return data.warnings[uid][gid];
 }
 
-// protection
 async function isProt(gid, uid) {
     const data = load();
     return data.protection[gid]?.protectedUsers?.includes(uid) || false;
