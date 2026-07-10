@@ -18,7 +18,7 @@ const fs = require('fs');
 const CONFIG = {
     CMDS: {
         BAN: 'باند', BAN2: 'تف', UNBAN: 'فك', KICK: 'برا', MUTE: 'تايم', UNMUTE: 'تكلم',
-        WARN: 'تحذير', WARNINGS: 'تحذيرات', CLEARWARN: 'شيل',
+        WARN: 'تح', WARNINGS: 'تحذيرات', CLEARWARN: 'شيل',
         LOCK: 'ق', UNLOCK: 'ف', PURGE: 'م', SLOWMODE: 'سلو',
         GAMES: 'العاب'
     },
@@ -412,8 +412,11 @@ class MTXBot extends Client {
             }
 
             else if (interaction.customId === 'close') {
-                if (interaction.user.id !== t.owner && !interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) 
-                    return interaction.reply({ content: '❌ أدمن أو صاحب التكت فقط', ephemeral: true });
+                const isAdmin = interaction.member.permissions.has(PermissionsBitField.Flags.Administrator);
+                const isClaimer = t.claimed && t.claimed === interaction.user.id;
+
+                if (!isAdmin && !isClaimer) 
+                    return interaction.reply({ content: '❌ بس الأدمن أو الي استلم التكت يقدر يغلقه!', ephemeral: true });
                 const closedAt = new Date().toLocaleString('ar-SA');
                 await interaction.reply({
                     embeds: [new EmbedBuilder().setTitle('🔴 تم الإغلاق')
@@ -443,8 +446,12 @@ class MTXBot extends Client {
             }
 
             else if (interaction.customId === 'adduser') {
-                if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator) && interaction.user.id !== t.owner) 
-                    return interaction.reply({ content: '❌ صاحب التكت أو أدمن فقط', ephemeral: true });
+                // Only admin OR the person who claimed the ticket can add users
+                const isAdmin = interaction.member.permissions.has(PermissionsBitField.Flags.Administrator);
+                const isClaimer = t.claimed && t.claimed === interaction.user.id;
+
+                if (!isAdmin && !isClaimer) 
+                    return interaction.reply({ content: '❌ بس الأدمن أو اللي استلم التكت يقدر يضيف أشخاص!', ephemeral: true });
                 const modal = new ModalBuilder().setCustomId('adduser_modal').setTitle('إضافة شخص للتكت');
                 modal.addComponents(new ActionRowBuilder().addComponents(
                     new TextInputBuilder().setCustomId('uid').setLabel('اكتب ID أو اسم المستخدم')
