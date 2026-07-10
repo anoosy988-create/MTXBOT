@@ -1,14 +1,14 @@
 {
-  "name": "mtx-protection-bot",
-  "version": "5.0.0",
-  "description": "🛡️ MTX Protection Bot - نظام حماية وإدارة متكامل للديسكورد",
+  "name": "mtx-bot",
+  "version": "6.1.0",
+  "description": "🤖 MTX Bot - Admin + Tickets System",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js"
   },
-  "keywords": ["discord", "bot", "moderation", "protection", "mtx"],
-  "author": "MTX Developer",
+  "keywords": ["discord", "bot", "tickets", "admin"],
+  "author": "MTX",
   "license": "MIT",
   "dependencies": {
     "discord.js": "^14.14.1"
