@@ -1,18 +1,12 @@
 {
   "name": "mtx-bot",
-  "version": "3.0.0",
-  "description": "MTX Protection Bot - MongoDB Edition",
+  "version": "1.0.0",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
-  "author": "MTX",
-  "license": "MIT",
   "dependencies": {
-    "discord.js": "^14.14.1",
-    "mongoose": "^8.0.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "discord.js": "^14.11.0",
+    "mongoose": "^7.5.0"
   }
 }
