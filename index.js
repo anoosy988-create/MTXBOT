@@ -1,12 +1,13 @@
 // mtx bot - my own protection bot
 // dont copy this shit
+const discord = require('discord.js');
+const fs = require('fs');
 
 const client = new discord.Client({
     intents: [
         discord.GatewayIntentBits.Guilds,
         discord.GatewayIntentBits.GuildMessages,
         discord.GatewayIntentBits.GuildMembers,
-        discord.GatewayIntentBits.MessageContent,
         discord.GatewayIntentBits.GuildModeration
     ]
 });
