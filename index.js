@@ -1,3 +1,7 @@
+// ╔═══════════════════════════════════════════════════════════════════════╗
+// ║  🤖 MTX BOT v6.5 - Uses database.js for persistent storage           ║
+// ╚═══════════════════════════════════════════════════════════════════════╝
+
 const { 
     Client, GatewayIntentBits, Partials, PermissionsBitField, 
     EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
@@ -6,6 +10,9 @@ const {
 } = require('discord.js');
 const http = require('http');
 const fs = require('fs');
+
+// Import database system
+const { WarningDB, ConfigDB } = require('./database.js');
 
 const CONFIG = {
     CMDS: {
@@ -61,47 +68,34 @@ class Embeds {
 class TicketSystem {
     constructor(client) {
         this.client = client;
-        this.configFile = 'servers_config.json';
         this.ticketsFile = 'tickets_data.json';
-        this.warningsFile = 'warnings_data.json';
-        this.cfg = fs.existsSync(this.configFile) ? JSON.parse(fs.readFileSync(this.configFile, 'utf8')) : {};
+        this.cfgFile = 'servers_config.json';
+        this.cfg = fs.existsSync(this.cfgFile) ? JSON.parse(fs.readFileSync(this.cfgFile, 'utf8')) : {};
         this.ticketsData = fs.existsSync(this.ticketsFile) ? JSON.parse(fs.readFileSync(this.ticketsFile, 'utf8')) : {};
-        this.warningsData = fs.existsSync(this.warningsFile) ? JSON.parse(fs.readFileSync(this.warningsFile, 'utf8')) : {};
         this.tickets = new Map();
         this.counters = {};
     }
-    save() { fs.writeFileSync(this.configFile, JSON.stringify(this.cfg, null, 2)); }
+    saveCfg() { fs.writeFileSync(this.cfgFile, JSON.stringify(this.cfg, null, 2)); }
     saveTickets() { fs.writeFileSync(this.ticketsFile, JSON.stringify(this.ticketsData, null, 2)); }
-    saveWarnings() { fs.writeFileSync(this.warningsFile, JSON.stringify(this.warningsData, null, 2)); }
     load() {
         Object.entries(this.ticketsData).forEach(([channelId, ticketData]) => { this.tickets.set(channelId, ticketData); });
         Object.values(this.ticketsData).forEach(t => { if (t.g && t.num) { if (!this.counters[t.g]) this.counters[t.g] = 0; if (t.num > this.counters[t.g]) this.counters[t.g] = t.num; } });
     }
     getOptions(guildId) { return this.cfg[guildId]?.ticketOptions || []; }
     generateValue(label) { return label.trim().replace(/\s+/g, '_'); }
+
+    // Warnings now use database.js
     getWarnings(guildId, userId) {
-        if (!this.warningsData[guildId]) this.warningsData[guildId] = {};
-        if (!this.warningsData[guildId][userId]) this.warningsData[guildId][userId] = [];
-        return this.warningsData[guildId][userId];
+        return WarningDB.getWarnings(userId, guildId);
     }
     addWarning(guildId, userId, warning) {
-        const warnings = this.getWarnings(guildId, userId);
-        warnings.push(warning);
-        this.warningsData[guildId][userId] = warnings;
-        this.saveWarnings();
-        return warnings.length;
+        return WarningDB.addWarning(userId, guildId, warning.reason, { id: warning.moderatorId, tag: warning.moderatorTag });
     }
     clearWarnings(guildId, userId) {
-        if (this.warningsData[guildId] && this.warningsData[guildId][userId]) { delete this.warningsData[guildId][userId]; this.saveWarnings(); }
+        WarningDB.clearWarnings(userId, guildId);
     }
     clearWarningByIndex(guildId, userId, index) {
-        const warnings = this.getWarnings(guildId, userId);
-        if (index >= 0 && index < warnings.length) {
-            warnings.splice(index, 1);
-            if (warnings.length === 0) { delete this.warningsData[guildId][userId]; } else { this.warningsData[guildId][userId] = warnings; }
-            this.saveWarnings(); return true;
-        }
-        return false;
+        return WarningDB.removeWarning(userId, guildId, index);
     }
 }
 
@@ -121,7 +115,7 @@ class MTXBot extends Client {
         this.on('interactionCreate', (i) => this.onInteraction(i));
     }
     async onReady() {
-        console.log(`\n    ╔═══════════════════════════════════════════════════╗\n    ║                                                   ║\n    ║        🤖 MTX BOT v6.4 - ONLINE                   ║\n    ║        Admin + Tickets + DM + Role Cmd            ║\n    ║        السيرفرات: ${this.guilds.cache.size.toString().padEnd(27)}║\n    ║                                                   ║\n    ╚═══════════════════════════════════════════════════╝\n        `);
+        console.log(`\n    ╔═══════════════════════════════════════════════════╗\n    ║                                                   ║\n    ║        🤖 MTX BOT v6.5 - ONLINE                   ║\n    ║        Uses database.js for persistent storage      ║\n    ║        السيرفرات: ${this.guilds.cache.size.toString().padEnd(27)}║\n    ║                                                   ║\n    ╚═══════════════════════════════════════════════════╝\n        `);
         await this.user.setPresence({ activities: [{ name: '🎫 التكتات | .العاب', type: 3 }], status: 'online' });
         this.ticketSystem.load();
         await this.registerSlashCommands();
@@ -238,7 +232,7 @@ class MTXBot extends Client {
                 const category = interaction.options.getChannel('category');
                 const role = interaction.options.getRole('role');
                 ts.cfg[g] = { ...ts.cfg[g], logsId: logs.id, categoryId: category.id, roleId: role.id };
-                ts.save();
+                ts.saveCfg();
                 await this.sendLog(interaction.guild, Embeds.logEmbed('⚙️ إعداد نظام التكتات', `${interaction.user} قام بإعداد نظام التكتات!`, 0x3498db, [
                     { name: '📋 لوقات', value: `${logs}`, inline: true }, { name: '📁 كاتقوري', value: `${category}`, inline: true }, { name: '👮 رتبة', value: role.name, inline: true }
                 ]));
@@ -263,7 +257,7 @@ class MTXBot extends Client {
                 if (ts.cfg[g].ticketOptions.length >= 25) return interaction.reply({ content: '❌ الحد الأقصى 25 خيار', ephemeral: true });
                 if (ts.cfg[g].ticketOptions.find(o => o.value === value)) return interaction.reply({ content: '❌ الخيار موجود مسبقاً', ephemeral: true });
                 ts.cfg[g].ticketOptions.push({ label, value });
-                ts.save();
+                ts.saveCfg();
                 await this.sendLog(interaction.guild, Embeds.logEmbed('➕ إضافة خيار تكت', `${interaction.user} أضاف خيار تكت جديد!`, 0x2ecc71, [{ name: '📝 الخيار', value: label, inline: true }]));
                 return interaction.reply({ content: `✅ تم إضافة **${label}**`, ephemeral: true });
             }
@@ -275,7 +269,7 @@ class MTXBot extends Client {
                 if (!optionToRemove) return interaction.reply({ content: `❌ الخيار "${label}" غير موجود`, ephemeral: true });
                 ts.cfg[g].ticketOptions = ts.cfg[g].ticketOptions.filter(o => o.value !== optionToRemove.value);
                 if (ts.cfg[g].ticketOptions.length === 0) delete ts.cfg[g].ticketOptions;
-                ts.save();
+                ts.saveCfg();
                 await this.sendLog(interaction.guild, Embeds.logEmbed('➖ حذف خيار تكت', `${interaction.user} حذف خيار تكت!`, 0xe74c3c, [{ name: '📝 الخيار', value: optionToRemove.label, inline: true }]));
                 return interaction.reply({ content: `✅ تم حذف **${optionToRemove.label}**`, ephemeral: true });
             }
@@ -286,9 +280,7 @@ class MTXBot extends Client {
             }
             if (interaction.commandName === 'log') {
                 const ch = interaction.options.getChannel('channel');
-                if (!ts.cfg[g]) ts.cfg[g] = {};
-                ts.cfg[g].adminLogId = ch.id;
-                ts.save();
+                ConfigDB.setLogChannel(g, ch.id);
                 await interaction.reply({ embeds: [Embeds.success('إعدادات اللوق', `📋 **${ch}** تم تحديده كروم للوق!`)] });
                 await this.sendLog(interaction.guild, Embeds.logEmbed('📋 تحديد روم اللوق', `${interaction.user} حدد روم اللوق!`, 0x3498db, [{ name: '📁 الروم', value: `${ch}`, inline: true }]));
             }
@@ -387,7 +379,7 @@ class MTXBot extends Client {
         }
     }
 
-    // ⚙️ ADMIN COMMANDS (ALL LOGGED)
+    // ⚙️ ADMIN COMMANDS (ALL LOGGED + uses database.js)
     async cmdBan(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
@@ -468,9 +460,8 @@ class MTXBot extends Client {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
         const reason = args.filter(a => !a.includes(member.id)).join(' ') || 'غير محدد';
-        const ts = this.ticketSystem;
-        const warning = { reason: reason, moderatorId: m.author.id, moderatorTag: m.author.tag, timestamp: new Date().toISOString(), guildName: m.guild.name };
-        const warnNumber = ts.addWarning(m.guild.id, member.id, warning);
+        const result = WarningDB.addWarning(member.id, m.guild.id, reason, m.author);
+        const warnNumber = result.total;
         try {
             const dmEmbed = new EmbedBuilder().setTitle('⚠️ تم تحذيرك').setDescription(`لقد تم تحذيرك في سيرفر **${m.guild.name}**`).addFields(
                 { name: '📌 السبب', value: reason, inline: false }, { name: '🔢 رقم التحذير', value: `#${warnNumber}`, inline: true }, { name: '🔧 المسؤول', value: m.author.tag, inline: true }
@@ -482,9 +473,8 @@ class MTXBot extends Client {
         await this.sendLog(m.guild, Embeds.logAction('تحذير', m.author, member.user, reason, { 'رقم التحذير': `#${warnNumber}` }));
     }
     async cmdWarnings(m, args) {
-        const ts = this.ticketSystem;
         const member = m.mentions.members.first() || m.member;
-        const warnings = ts.getWarnings(m.guild.id, member.id);
+        const warnings = WarningDB.getWarnings(member.id, m.guild.id);
         if (warnings.length === 0) { return m.reply({ embeds: [Embeds.info('تحذيرات', `**${member}** — ما عنده تحذيرات! ✅`)] }); }
         const embed = new EmbedBuilder().setTitle(`⚠️ تحذيرات ${member.user.tag}`).setColor(CONFIG.COLORS.WARN).setThumbnail(member.user.displayAvatarURL()).setFooter({ text: `إجمالي التحذيرات: ${warnings.length}` }).setTimestamp();
         warnings.forEach((warn, index) => {
@@ -497,14 +487,13 @@ class MTXBot extends Client {
     async cmdClearWarn(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
-        const ts = this.ticketSystem;
         const index = parseInt(args.find(a => /^\d+$/.test(a) && !a.includes(member.id)));
         if (index && index > 0) {
-            const success = ts.clearWarningByIndex(m.guild.id, member.id, index - 1);
+            const success = WarningDB.removeWarning(member.id, m.guild.id, index - 1);
             if (success) { m.reply({ embeds: [Embeds.success('تم المسح', `🗑️ تم مسح التحذير رقم **${index}** لـ **${member}**!`)] }); await this.sendLog(m.guild, Embeds.logAction('مسح تحذير', m.author, member.user, `مسح تحذير رقم ${index}`)); }
             else { m.reply({ embeds: [Embeds.error('خطأ', `ما فيه تحذير رقم **${index}**!`)] }); }
         } else {
-            ts.clearWarnings(m.guild.id, member.id);
+            WarningDB.clearWarnings(member.id, m.guild.id);
             m.reply({ embeds: [Embeds.success('تم المسح', `🗑️ تم مسح جميع تحذيرات **${member}**!`)] });
             await this.sendLog(m.guild, Embeds.logAction('مسح تحذيرات', m.author, member.user, 'مسح'));
         }
@@ -575,8 +564,7 @@ class MTXBot extends Client {
         switch(match[2]) { case 'd': return value * 86400000; case 'h': return value * 3600000; case 'm': return value * 60000; case 's': return value * 1000; default: return null; }
     }
     async sendLog(guild, embed) {
-        const ts = this.ticketSystem;
-        const chId = ts.cfg[guild.id]?.adminLogId;
+        const chId = ConfigDB.getLogChannel(guild.id);
         if (!chId) return;
         const ch = guild.channels.cache.get(chId);
         if (ch) try { await ch.send({ embeds: [embed] }); } catch(e) {}
