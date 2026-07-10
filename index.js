@@ -1,386 +1,477 @@
-// ╔═══════════════════════════════════════════════════════════════╗
-// ║  🤖 MTX BOT v3.0 - بوت الحماية والإدارة المتقدم             ║
-// ║  MongoDB Database | Discord.js v14                            ║
-// ╚═══════════════════════════════════════════════════════════════╝
+const { Client, GatewayIntentBits, Partials, PermissionsBitField, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder, AuditLogEvent, ChannelType } = require('discord.js');
+const db = require('./database');
 
-const { 
-    Client, 
-    GatewayIntentBits, 
-    Partials, 
-    PermissionsBitField, 
-    EmbedBuilder, 
-    ActionRowBuilder, 
-    ButtonBuilder, 
-    ButtonStyle,
-    SlashCommandBuilder,
-    AuditLogEvent,
-    ChannelType
-} = require('discord.js');
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildModeration
+    ],
+    partials: [Partials.Channel, Partials.Message, Partials.User, Partials.GuildMember]
+});
 
-const { connectDatabase, WarningDB, ProtectionDB } = require('./database');
+const PREFIX = '.';
+let startTime;
 
-// ═══════════════════════════════════════════════════════════════
-// ⚙️ الإعدادات
-// ═══════════════════════════════════════════════════════════════
+// colors
+const green = 0x2ecc71;
+const red = 0xe74c3c;
+const yellow = 0xf39c12;
+const blue = 0x3498db;
+const purple = 0x9b59b6;
 
-const CONFIG = {
-    CMDS: {
-        BAN: 'باند', UNBAN: 'تف', KICK: 'بنعالي',
-        MUTE: 'اسكت', UNMUTE: 'تكلم', WARN: 'تحذير',
-        LOCK: 'ق', UNLOCK: 'ف', PURGE: 'م',
-        SLOWMODE: 'بطي', PROTECTION: 'حماية',
-        GAMES: 'العاب', WARNINGS: 'تحذيرات', CLEARWARN: 'مسح_تحذير'
-    },
-    PROTECTION: {
-        SPAM_THRESHOLD: 5,
-        SPAM_WINDOW: 3000,
-        SPAM_MUTE_HOURS: 6,
-        LINK_MUTE_MINUTES: 30,
-        WARN_LIMIT: 5,           // 5 تحذيرات
-        WARN_MUTE_DAYS: 2        // يومين ميوت
-    },
-    COLORS: {
-        SUCCESS: 0x2ecc71, ERROR: 0xe74c3c,
-        WARN: 0xf39c12, INFO: 0x3498db,
-        PROTECTION: 0x9b59b6
-    }
-};
+// helper
+function embed(color, title, desc) {
+    return new EmbedBuilder().setColor(color).setTitle(title).setDescription(desc).setTimestamp();
+}
 
-// ═══════════════════════════════════════════════════════════════
-// 🎨 الإمبدات
-// ═══════════════════════════════════════════════════════════════
-
-class Embeds {
-    static success(title, description) {
-        return new EmbedBuilder().setTitle(`✅ | ${title}`).setDescription(description).setColor(CONFIG.COLORS.SUCCESS).setTimestamp();
-    }
-    static error(title, description) {
-        return new EmbedBuilder().setTitle(`❌ | ${title}`).setDescription(description).setColor(CONFIG.COLORS.ERROR).setTimestamp();
-    }
-    static warn(title, description) {
-        return new EmbedBuilder().setTitle(`⚠️ | ${title}`).setDescription(description).setColor(CONFIG.COLORS.WARN).setTimestamp();
-    }
-    static info(title, description) {
-        return new EmbedBuilder().setTitle(`ℹ️ | ${title}`).setDescription(description).setColor(CONFIG.COLORS.INFO).setTimestamp();
-    }
-    static protection(title, description) {
-        return new EmbedBuilder().setTitle(`🛡️ | ${title}`).setDescription(description).setColor(CONFIG.COLORS.PROTECTION).setTimestamp();
-    }
-    static logAction(action, moderator, target, reason = 'غير محدد', extra = {}) {
-        const embed = new EmbedBuilder()
-            .setTitle(`📝 سجل إداري | ${action}`)
-            .setColor(CONFIG.COLORS.INFO).setTimestamp()
-            .addFields(
-                { name: '👤 المستخدم', value: `${target} (\`${target.id}\`)`, inline: true },
-                { name: '🔧 المسؤول', value: `${moderator} (\`${moderator.id}\`)`, inline: true },
-                { name: '📌 السبب', value: reason, inline: false }
-            )
-            .setFooter({ text: 'MTX Protection System' });
-        for (const [k, v] of Object.entries(extra)) embed.addFields({ name: k, value: String(v), inline: true });
-        return embed;
+// log func
+async function sendLog(guild, e) {
+    const chId = await db.getLog(guild.id);
+    if (!chId) return;
+    const ch = guild.channels.cache.get(chId);
+    if (ch) {
+        ch.send({ embeds: [e] }).catch(err => console.log('log err:', err.message));
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// 🛡️ نظام الحماية
-// ═══════════════════════════════════════════════════════════════
+// time parser
+function parseTime(s) {
+    if (!s) return null;
+    const num = parseInt(s);
+    const unit = s.slice(-1);
+    if (unit === 'd') return num * 24 * 60 * 60 * 1000;
+    if (unit === 'h') return num * 60 * 60 * 1000;
+    if (unit === 'm') return num * 60 * 1000;
+    if (unit === 's') return num * 1000;
+    return null;
+}
 
-class ProtectionSystem {
-    constructor(client) { this.client = client; this.spamTracker = new Map(); this.linkRegex = /https?:\/\/[^\s]+/gi; }
+// anti spam
+const spamMap = new Map();
+
+// anti link regex
+const linkRegex = /https?:\/\/[^\s]+/gi;
+
+// ========== EVENTS ==========
+
+client.on('ready', async () => {
+    startTime = Date.now();
+    console.log(`bot online: ${client.user.tag}`);
+    console.log(`guilds: ${client.guilds.cache.size}`);
     
-    async sendLog(guild, embed) {
-        const chId = await ProtectionDB.getLogChannel(guild.id);
-        if (!chId) return;
-        const ch = guild.channels.cache.get(chId);
-        if (ch) try { await ch.send({ embeds: [embed] }); } catch(e) {}
+    client.user.setPresence({
+        activities: [{ name: 'MTX | .العاب', type: 3 }],
+        status: 'dnd'
+    });
+    
+    // slash cmds
+    const cmds = [
+        new SlashCommandBuilder().setName('لوق').setDescription('set log channel').addChannelOption(o => o.setName('channel').setDescription('log channel').setRequired(true).addChannelTypes(ChannelType.GuildText)),
+        new SlashCommandBuilder().setName('حالة').setDescription('bot status')
+    ];
+    try {
+        await client.application.commands.set(cmds);
+    } catch (err) {
+        console.log('slash cmd err:', err.message);
     }
+});
 
-    async checkBotEntry(member) {
-        if (!member.user.bot) return;
-        const guild = member.guild, owner = await guild.fetchOwner();
-        if (!(await ProtectionDB.isEnabled(guild.id))) return;
-        
-        try {
-            const logs = await guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.BotAdd });
-            const entry = logs.entries.first();
-            if (!entry) return;
-            const adder = entry.executor;
-            if (await ProtectionDB.isProtected(guild.id, adder.id) || adder.id === owner.id) return;
-
-            await member.kick('🛡️ MTX: بوت مشبوه');
-            const embed = Embeds.protection('تم طرد بوت مشبوه!',
-                `**تم اكتشاف بوت مشبوه وطرده تلقائياً**\n\n` +
-                `👤 **الشخص اللي ضاف البوت:** ${adder} (\`${adder.id}\`)\n` +
-                `🤖 **اسم البوت:** ${member.user.tag} (\`${member.id}\`)\n` +
-                `⏰ **الوقت:** ${new Date().toLocaleString('ar-SA')}\n` +
-                `⚡ **الإجراء:** تم الطرد الفوري`
-            );
-            await owner.send({ embeds: [embed] });
-            await this.sendLog(guild, embed);
-
-            await guild.members.ban(adder, { reason: '🛡️ MTX: محاولة إضافة بوت غير مصرح بها', deleteMessageDays: 0 });
-            const banEmbed = Embeds.protection('تم تبنيد شخص حاول إضافة بوت!',
-                `**تم تبنيد الشخص تلقائياً**\n\n` +
-                `👤 **الشخص:** ${adder} (\`${adder.id}\`)\n` +
-                `🤖 **البوت:** ${member.user.tag}\n` +
-                `⏰ **الوقت:** ${new Date().toLocaleString('ar-SA')}`
-            );
-            await owner.send({ embeds: [banEmbed] });
-            await this.sendLog(guild, banEmbed);
-        } catch(e) { console.error('[MTX] خطأ:', e); }
+// member join - anti bot
+client.on('guildMemberAdd', async member => {
+    if (!member.user.bot) return;
+    
+    const guild = member.guild;
+    let owner;
+    try {
+        owner = await guild.fetchOwner();
+    } catch (err) {
+        console.log('fetch owner err:', err.message);
+        return;
     }
-
-    async checkSpam(message) {
-        if (message.author.bot || message.member?.permissions.has(PermissionsBitField.Flags.Administrator)) return false;
-        const uid = message.author.id, now = Date.now();
-        if (!this.spamTracker.has(uid)) this.spamTracker.set(uid, []);
-        const ts = this.spamTracker.get(uid); ts.push(now);
-        const recent = ts.filter(t => now - t <= CONFIG.PROTECTION.SPAM_WINDOW);
-        this.spamTracker.set(uid, recent);
+    
+    const enabled = await db.protEnabled(guild.id);
+    if (!enabled) return;
+    
+    try {
+        const logs = await guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.BotAdd });
+        const entry = logs.entries.first();
+        if (!entry) return;
         
-        if (recent.length >= CONFIG.PROTECTION.SPAM_THRESHOLD) {
+        const inviter = entry.executor;
+        if (inviter.id === owner.id) return;
+        if (await db.isProtected(guild.id, inviter.id)) return;
+        
+        // kick bot
+        await member.kick('unauthorized bot');
+        console.log(`kicked bot ${member.user.tag} added by ${inviter.tag}`);
+        
+        // notify owner
+        const kickEmbed = embed(purple, '🛡️ bot kicked', `bot ${member.user.tag} was kicked\nadded by: ${inviter}\ntime: ${new Date().toLocaleString()}`);
+        owner.send({ embeds: [kickEmbed] }).catch(() => {});
+        sendLog(guild, kickEmbed);
+        
+        // ban inviter
+        await guild.members.ban(inviter, { reason: 'added unauthorized bot', deleteMessageDays: 0 });
+        console.log(`banned ${inviter.tag} for adding bot`);
+        
+        const banEmbed = embed(purple, '🛡️ user banned', `${inviter} was banned for adding bot ${member.user.tag}`);
+        owner.send({ embeds: [banEmbed] }).catch(() => {});
+        sendLog(guild, banEmbed);
+        
+    } catch (err) {
+        console.log('anti bot err:', err.message);
+    }
+});
+
+// message handler
+client.on('messageCreate', async msg => {
+    if (msg.author.bot || !msg.guild) return;
+    
+    // check perms
+    const isAdmin = msg.member.permissions.has(PermissionsBitField.Flags.Administrator);
+    const isOwner = msg.author.id === msg.guild.ownerId;
+    const isStarter = isAdmin || isOwner;
+    
+    // anti spam
+    if (!isAdmin) {
+        const now = Date.now();
+        let userSpam = spamMap.get(msg.author.id) || [];
+        userSpam = userSpam.filter(t => now - t <= 3000);
+        userSpam.push(now);
+        spamMap.set(msg.author.id, userSpam);
+        
+        if (userSpam.length >= 5) {
             try {
-                await message.member.timeout(CONFIG.PROTECTION.SPAM_MUTE_HOURS * 3600000, '🛡️ MTX: سبام مفرط');
-                const embed = Embeds.warn('تم كتم المستخدم',
-                    `**${message.author} تم كتمه بسبب السبام**\n⏰ **المدة:** ${CONFIG.PROTECTION.SPAM_MUTE_HOURS} ساعات\n📊 **الرسائل:** ${recent.length}`
-                );
-                const msg = await message.channel.send({ embeds: [embed] });
-                setTimeout(() => msg.delete().catch(()=>{}), 10000);
-                await this.sendLog(message.guild, Embeds.logAction('كتم تلقائي (سبام)', this.client.user, message.author, 'سبام مفرط', {المدة: `${CONFIG.PROTECTION.SPAM_MUTE_HOURS} ساعات`}));
-                return true;
-            } catch(e) {}
+                await msg.member.timeout(21600000, 'spam');
+                const m = await msg.channel.send({ embeds: [embed(yellow, '⚠️ muted for spam', `${msg.author} muted 6 hours for spamming`)] });
+                setTimeout(() => m.delete().catch(() => {}), 10000);
+                sendLog(msg.guild, embed(blue, '📝 auto mute', `user: ${msg.author}\nreason: spam\nmod: bot`));
+            } catch (err) {
+                console.log('spam mute err:', err.message);
+            }
+            return;
         }
-        return false;
     }
-
-    async checkLinks(message) {
-        if (message.author.bot) return false;
-        if (message.member?.permissions.has(PermissionsBitField.Flags.Administrator)) return false;
-        if (message.author.id === message.guild.ownerId) return false;
-        if (!this.linkRegex.test(message.content)) return false;
+    
+    // anti link
+    if (!isAdmin && !isOwner) {
+        if (linkRegex.test(msg.content)) {
+            try {
+                await msg.delete();
+                await msg.member.timeout(1800000, 'posted link');
+                const m = await msg.channel.send({ embeds: [embed(yellow, '⚠️ muted for link', `${msg.author} muted 30min for posting links`)] });
+                setTimeout(() => m.delete().catch(() => {}), 10000);
+                sendLog(msg.guild, embed(blue, '📝 auto mute', `user: ${msg.author}\nreason: link\nmod: bot`));
+            } catch (err) {
+                console.log('link mute err:', err.message);
+            }
+            return;
+        }
+    }
+    
+    // commands
+    if (!msg.content.startsWith(PREFIX)) return;
+    
+    const args = msg.content.slice(PREFIX.length).trim().split(/\s+/);
+    const cmd = args.shift();
+    
+    // ===== باند =====
+    if (cmd === 'باند') {
+        if (!isStarter) return msg.reply({ embeds: [embed(red, '❌ no perms', 'starter only')] });
+        
+        const target = msg.mentions.members.first();
+        if (!target) return msg.reply({ embeds: [embed(red, '❌ usage', '.باند @user [time] reason')] });
+        if (target.id === msg.guild.ownerId) return msg.reply({ embeds: [embed(red, '❌ no', 'cant ban owner')] });
+        
+        const timeArg = args.find(a => /^\d+[dhms]$/.test(a));
+        let reason = args.filter(a => a !== timeArg && !a.includes(target.id)).join(' ');
+        if (!reason) reason = 'no reason';
         
         try {
-            await message.delete();
-            await message.member.timeout(CONFIG.PROTECTION.LINK_MUTE_MINUTES * 60000, '🛡️ MTX: إرسال روابط');
-            const embed = Embeds.warn('تم كتم المستخدم',
-                `**${message.author} تم كتمه بسبب إرسال روابط**\n⏰ **المدة:** ${CONFIG.PROTECTION.LINK_MUTE_MINUTES} دقيقة`
-            );
-            const msg = await message.channel.send({ embeds: [embed] });
-            setTimeout(() => msg.delete().catch(()=>{}), 10000);
-            await this.sendLog(message.guild, Embeds.logAction('كتم تلقائي (روابط)', this.client.user, message.author, 'إرسال روابط', {المدة: `${CONFIG.PROTECTION.LINK_MUTE_MINUTES} دقيقة`}));
-            return true;
-        } catch(e) { return false; }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// 🤖 البوت
-// ═══════════════════════════════════════════════════════════════
-
-class MTXBot extends Client {
-    constructor() {
-        super({
-            intents: [
-                GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages,
-                GatewayIntentBits.GuildMembers, GatewayIntentBits.MessageContent,
-                GatewayIntentBits.GuildModeration, GatewayIntentBits.GuildPresences
-            ],
-            partials: [Partials.Channel, Partials.Message, Partials.User, Partials.GuildMember]
-        });
-        this.protection = new ProtectionSystem(this);
-        this.startTime = new Date();
-        this.setupEvents();
-    }
-
-    setupEvents() {
-        this.once('ready', () => this.onReady());
-        this.on('messageCreate', (m) => this.onMessage(m));
-        this.on('guildMemberAdd', (m) => this.onMemberAdd(m));
-        this.on('interactionCreate', (i) => this.onInteraction(i));
-    }
-
-    async onReady() {
-        console.log(`\n╔═══════════════════════════════════════╗\n║     🤖 MTX BOT v3.0                    ║\n║     متصل بـ MongoDB!                   ║\n║     السيرفرات: ${this.guilds.cache.size}                      ║\n╚═══════════════════════════════════════╝\n`);
-        await this.user.setPresence({ activities: [{ name: '🛡️ MTX | .العاب', type: 3 }], status: 'dnd' });
-        await this.registerSlashCommands();
-    }
-
-    async registerSlashCommands() {
-        const cmds = [
-            new SlashCommandBuilder().setName('لوق').setDescription('تحديد روم اللوق')
-                .addChannelOption(o => o.setName('channel').setDescription('روم اللوق').setRequired(true).addChannelTypes(ChannelType.GuildText)),
-            new SlashCommandBuilder().setName('حالة').setDescription('حالة البوت')
-        ];
-        try { await this.application.commands.set(cmds); } catch(e) {}
-    }
-
-    async onMessage(message) {
-        if (message.author.bot || !message.guild) return;
-        if (await this.protection.checkSpam(message)) return;
-        if (await this.protection.checkLinks(message)) return;
-        await this.handleCommand(message);
-    }
-
-    async onMemberAdd(member) { if (member.user.bot) await this.protection.checkBotEntry(member); }
-
-    async onInteraction(i) {
-        if (i.isButton() && i.customId.startsWith('game_')) {
-            const game = i.customId.replace('game_', '');
-            const embeds = {
-                roulette: new EmbedBuilder().setTitle('🎲 روليت').setDescription('لعبة الحظ!').setColor(0xe74c3c),
-                mafia: new EmbedBuilder().setTitle('🕵️ مافيا').setDescription('لعبة الغموض!').setColor(0x2c3e50),
-                castle: new EmbedBuilder().setTitle('🏰 كاستل').setDescription('حرب القلاع!').setColor(0x9b59b6),
-                tictactoe: new EmbedBuilder().setTitle('⚔️ تكت تو').setDescription('XO!').setColor(0x34495e)
-            };
-            if (embeds[game]) await i.reply({ embeds: [embeds[game]], ephemeral: true });
-        }
-        if (i.isChatInputCommand()) await this.handleSlash(i);
-    }
-
-    async handleSlash(i) {
-        const isStarter = i.member.permissions.has(PermissionsBitField.Flags.Administrator) || i.user.id === i.guild.ownerId;
-        if (i.commandName === 'لوق') {
-            if (!isStarter) return i.reply({ embeds: [Embeds.error('صلاحيات', 'بس الستيرتر!')], ephemeral: true });
-            const ch = i.options.getChannel('channel');
-            await ProtectionDB.setLogChannel(i.guildId, ch.id);
-            await i.reply({ embeds: [Embeds.success('إعدادات اللوق', `📋 **${ch}** تم تحديده!`)] });
-        }
-        if (i.commandName === 'حالة') {
-            const uptime = new Date() - this.startTime;
-            const h = Math.floor(uptime/3600000), m = Math.floor((uptime%3600000)/60000);
-            const embed = new EmbedBuilder().setTitle('🤖 حالة MTX').setDescription(`**الحالة:** 🟢 شغال\n**الوقت:** ${h}س ${m}د`).setColor(CONFIG.COLORS.SUCCESS)
-                .addFields(
-                    {name: '🛡️ الحماية', value: (await ProtectionDB.isEnabled(i.guildId))?'مفعلة':'معطلة', inline: true},
-                    {name: '📊 السيرفرات', value: String(this.guilds.cache.size), inline: true}
-                );
-            await i.reply({ embeds: [embed] });
+            await target.ban({ reason: `by ${msg.author.tag}: ${reason}`, deleteMessageDays: 0 });
+            msg.reply({ embeds: [embed(green, '✅ banned', `${target} banned\nreason: ${reason}\ntime: ${timeArg || 'permanent'}`)] });
+            sendLog(msg.guild, embed(blue, '📝 ban', `target: ${target}\nmod: ${msg.author}\nreason: ${reason}`));
+            
+            if (timeArg) {
+                const ms = parseTime(timeArg);
+                if (ms) {
+                    setTimeout(() => {
+                        msg.guild.members.unban(target.id, 'time expired').catch(err => console.log('unban err:', err.message));
+                    }, ms);
+                }
+            }
+        } catch (err) {
+            msg.reply({ embeds: [embed(red, '❌ error', err.message)] });
         }
     }
-
-    // ═══════════════════════════════════════
-    // 🔧 الأوامر التقليدية
-    // ═══════════════════════════════════════
-
-    async handleCommand(message) {
-        const content = message.content.trim();
-        if (!content.startsWith('.')) return;
-        const args = content.slice(1).trim().split(/\s+/);
-        const cmd = args.shift();
-        const isStarter = message.member.permissions.has(PermissionsBitField.Flags.Administrator) || message.author.id === message.guild.ownerId;
-        const isOwner = message.author.id === message.guild.ownerId;
-
-        switch(cmd) {
-            case CONFIG.CMDS.BAN: if(!isStarter)return this.noPerm(message); await this.cmdBan(message,args); break;
-            case CONFIG.CMDS.UNBAN: if(!isStarter)return this.noPerm(message); await this.cmdUnban(message,args); break;
-            case CONFIG.CMDS.KICK: if(!isStarter)return this.noPerm(message); await this.cmdKick(message,args); break;
-            case CONFIG.CMDS.MUTE: if(!isStarter)return this.noPerm(message); await this.cmdMute(message,args); break;
-            case CONFIG.CMDS.UNMUTE: if(!isStarter)return this.noPerm(message); await this.cmdUnmute(message,args); break;
-            case CONFIG.CMDS.WARN: if(!isStarter)return this.noPerm(message); await this.cmdWarn(message,args); break;
-            case CONFIG.CMDS.WARNINGS: await this.cmdWarnings(message,args); break;
-            case CONFIG.CMDS.CLEARWARN: if(!isStarter)return this.noPerm(message); await this.cmdClearWarn(message,args); break;
-            case CONFIG.CMDS.LOCK: if(!isStarter)return this.noPerm(message); await this.cmdLock(message,args); break;
-            case CONFIG.CMDS.UNLOCK: if(!isStarter)return this.noPerm(message); await this.cmdUnlock(message,args); break;
-            case CONFIG.CMDS.PURGE: if(!isStarter)return this.noPerm(message); await this.cmdPurge(message,args); break;
-            case CONFIG.CMDS.SLOWMODE: if(!isStarter)return this.noPerm(message); await this.cmdSlowmode(message,args); break;
-            case CONFIG.CMDS.PROTECTION: if(!isOwner)return message.reply({embeds:[Embeds.error('خطأ','بس الأونر!')]}); await this.cmdProtection(message,args); break;
-            case CONFIG.CMDS.GAMES: await this.cmdGames(message); break;
-        }
-    }
-
-    noPerm(m) { return m.reply({embeds:[Embeds.error('صلاحيات','بس الستيرتر يقدر يستخدم هذا الأمر!')]}); }
-
-    // ═══════════════════════════════════════
-    // 🚫 باند
-    // ═══════════════════════════════════════
-    async cmdBan(m, args) {
-        const member = m.mentions.members.first();
-        if(!member) return m.reply({embeds:[Embeds.error('خطأ','منشن العضو!')]});
-        if(member.id===m.guild.ownerId) return m.reply({embeds:[Embeds.error('خطأ','ما تقدر تبند الأونر!')]});
-        const timeArg = args.find(a=>/^\d+[dhms]$/.test(a));
-        const reason = args.filter(a=>a!==timeArg&&!a.includes(member.id)).join(' ')||'غير محدد';
-        try {
-            await member.ban({reason:`بواسطة ${m.author.tag}: ${reason}`,deleteMessageDays:0});
-            m.reply({embeds:[Embeds.success('تم التبنيد',`**${member}** تم تبنيده!\n📌 السبب: ${reason}\n⏰ الوقت: ${timeArg||'دائم'}`)]});
-            await this.protection.sendLog(m.guild, Embeds.logAction('تبنيد',m.author,member.user,reason,{الوقت:timeArg||'دائم'}));
-            if(timeArg){const ms=this.parseTime(timeArg);if(ms)setTimeout(()=>m.guild.members.unban(member.id,'انتهاء الوقت').catch(()=>{}),ms);}
-        } catch(e){m.reply({embeds:[Embeds.error('خطأ',e.message)]});}
-    }
-
-    // ═══════════════════════════════════════
-    // 🔓 فك باند
-    // ═══════════════════════════════════════
-    async cmdUnban(m, args) {
+    
+    // ===== تف (unban) =====
+    else if (cmd === 'تف') {
+        if (!isStarter) return msg.reply({ embeds: [embed(red, '❌ no perms', 'starter only')] });
+        
         const uid = args[0];
-        if(!uid||!/^\d+$/.test(uid)) return m.reply({embeds:[Embeds.error('خطأ','حط ايدي العضو!')]});
+        if (!uid || !/^\d+$/.test(uid)) return msg.reply({ embeds: [embed(red, '❌ usage', '.تف userid')] });
+        
         try {
-            const user = await this.users.fetch(uid);
-            await m.guild.members.unban(user,`بواسطة ${m.author.tag}`);
-            m.reply({embeds:[Embeds.success('تم فك الباند',`**${user.tag}** تم فك الباند عنه!`)]});
-            await this.protection.sendLog(m.guild, Embeds.logAction('فك باند',m.author,user,'فك الباند'));
-        } catch(e){m.reply({embeds:[Embeds.error('خطأ',e.message)]});}
+            const user = await client.users.fetch(uid);
+            await msg.guild.members.unban(user, `by ${msg.author.tag}`);
+            msg.reply({ embeds: [embed(green, '✅ unbanned', `${user.tag} unbanned`)] });
+            sendLog(msg.guild, embed(blue, '📝 unban', `target: ${user}\nmod: ${msg.author}`));
+        } catch (err) {
+            msg.reply({ embeds: [embed(red, '❌ error', err.message)] });
+        }
     }
-
-    // ═══════════════════════════════════════
-    // 👢 طرد
-    // ═══════════════════════════════════════
-    async cmdKick(m, args) {
-        const member = m.mentions.members.first();
-        if(!member) return m.reply({embeds:[Embeds.error('خطأ','منشن العضو!')]});
-        const reason = args.filter(a=>!a.includes(member.id)).join(' ')||'غير محدد';
+    
+    // ===== بنعالي (kick) =====
+    else if (cmd === 'بنعالي') {
+        if (!isStarter) return msg.reply({ embeds: [embed(red, '❌ no perms', 'starter only')] });
+        
+        const target = msg.mentions.members.first();
+        if (!target) return msg.reply({ embeds: [embed(red, '❌ usage', '.بنعالي @user reason')] });
+        
+        let reason = args.filter(a => !a.includes(target.id)).join(' ');
+        if (!reason) reason = 'no reason';
+        
         try {
-            await member.kick(`بواسطة ${m.author.tag}: ${reason}`);
-            m.reply({embeds:[Embeds.success('تم الطرد',`**${member}** تم طرده!\n📌 السبب: ${reason}`)]});
-            await this.protection.sendLog(m.guild, Embeds.logAction('طرد',m.author,member.user,reason));
-        } catch(e){m.reply({embeds:[Embeds.error('خطأ',e.message)]});}
+            await target.kick(`by ${msg.author.tag}: ${reason}`);
+            msg.reply({ embeds: [embed(green, '✅ kicked', `${target} kicked\nreason: ${reason}`)] });
+            sendLog(msg.guild, embed(blue, '📝 kick', `target: ${target}\nmod: ${msg.author}\nreason: ${reason}`));
+        } catch (err) {
+            msg.reply({ embeds: [embed(red, '❌ error', err.message)] });
+        }
     }
-
-    // ═══════════════════════════════════════
-    // 🔇 كتم
-    // ═══════════════════════════════════════
-    async cmdMute(m, args) {
-        const member = m.mentions.members.first();
-        if(!member) return m.reply({embeds:[Embeds.error('خطأ','منشن العضو!')]});
-        const timeArg = args.find(a=>/^\d+[dhms]$/.test(a))||'1h';
-        const reason = args.filter(a=>a!==timeArg&&!a.includes(member.id)).join(' ')||'غير محدد';
-        const ms = this.parseTime(timeArg);
-        if(!ms) return m.reply({embeds:[Embeds.error('خطأ','صيغة الوقت غير صحيحة! (1h, 30m, 1d)')]});
+    
+    // ===== اسكت (mute) =====
+    else if (cmd === 'اسكت') {
+        if (!isStarter) return msg.reply({ embeds: [embed(red, '❌ no perms', 'starter only')] });
+        
+        const target = msg.mentions.members.first();
+        if (!target) return msg.reply({ embeds: [embed(red, '❌ usage', '.اسكت @user [time] reason')] });
+        
+        const timeArg = args.find(a => /^\d+[dhms]$/.test(a)) || '1h';
+        let reason = args.filter(a => a !== timeArg && !a.includes(target.id)).join(' ');
+        if (!reason) reason = 'no reason';
+        
+        const ms = parseTime(timeArg);
+        if (!ms) return msg.reply({ embeds: [embed(red, '❌ bad time', 'use format: 1h, 30m, 1d')] });
+        
         try {
-            await member.timeout(ms,`بواسطة ${m.author.tag}: ${reason}`);
-            m.reply({embeds:[Embeds.success('تم الكتم',`**${member}** تم كتمه!\n⏰ المدة: ${timeArg}\n📌 السبب: ${reason}`)]});
-            await this.protection.sendLog(m.guild, Embeds.logAction('كتم',m.author,member.user,reason,{المدة:timeArg}));
-        } catch(e){m.reply({embeds:[Embeds.error('خطأ',e.message)]});}
+            await target.timeout(ms, `by ${msg.author.tag}: ${reason}`);
+            msg.reply({ embeds: [embed(green, '✅ muted', `${target} muted\n duration: ${timeArg}\nreason: ${reason}`)] });
+            sendLog(msg.guild, embed(blue, '📝 mute', `target: ${target}\nmod: ${msg.author}\nreason: ${reason}`));
+        } catch (err) {
+            msg.reply({ embeds: [embed(red, '❌ error', err.message)] });
+        }
     }
-
-    // ═══════════════════════════════════════
-    // 🔊 فك كتم
-    // ═══════════════════════════════════════
-    async cmdUnmute(m, args) {
-        const member = m.mentions.members.first();
-        if(!member) return m.reply({embeds:[Embeds.error('خطأ','منشن العضو!')]});
+    
+    // ===== تكلم (unmute) =====
+    else if (cmd === 'تكلم') {
+        if (!isStarter) return msg.reply({ embeds: [embed(red, '❌ no perms', 'starter only')] });
+        
+        const target = msg.mentions.members.first();
+        if (!target) return msg.reply({ embeds: [embed(red, '❌ usage', '.تكلم @user')] });
+        
         try {
-            await member.timeout(null,`بواسطة ${m.author.tag}`);
-            m.reply({embeds:[Embeds.success('تم فك الكتم',`**${member}** يقدر يتكلم الحين!`)]});
-            await this.protection.sendLog(m.guild, Embeds.logAction('فك كتم',m.author,member.user,'فك الكتم'));
-        } catch(e){m.reply({embeds:[Embeds.error('خطأ',e.message)]});}
+            await target.timeout(null, `by ${msg.author.tag}`);
+            msg.reply({ embeds: [embed(green, '✅ unmuted', `${target} can talk now`)] });
+            sendLog(msg.guild, embed(blue, '📝 unmute', `target: ${target}\nmod: ${msg.author}`));
+        } catch (err) {
+            msg.reply({ embeds: [embed(red, '❌ error', err.message)] });
+        }
     }
-
-    // ═══════════════════════════════════════
-    // ⚠️ تحذير - النظام الجديد (5 = يومين ميوت)
-    // ═══════════════════════════════════════
-    async cmdWarn(m, args) {
-        const member = m.mentions.members.first();
-        if(!member) return m.reply({embeds:[Embeds.error('خطأ','منشن العضو!')]});
-        const reason = args.filter(a=>!a.includes(member.id)).join(' ')||'غير محدد';
-
-        const result = await WarningDB.addWarning(member.id, m.guild.id, reason, m.author);
-        const warnings = await WarningDB.getWarnings(member.id, m.guild.id);
-
-        // إذا وصل 5 تحذيرات = ميوت يومين
-        if (result.total >= CONFIG.PROTECTION.WARN_LIMIT) {
-            const muteDuration = CONFIG.PROTECTION.WARN_MUTE_DAYS * 24 * 60 * 60 * 1000; // يومين بالملي
+    
+    // ===== تحذير =====
+    else if (cmd === 'تحذير') {
+        if (!isStarter) return msg.reply({ embeds: [embed(red, '❌ no perms', 'starter only')] });
+        
+        const target = msg.mentions.members.first();
+        if (!target) return msg.reply({ embeds: [embed(red, '❌ usage', '.تحذير @user reason')] });
+        
+        let reason = args.filter(a => !a.includes(target.id)).join(' ');
+        if (!reason) reason = 'no reason';
+        
+        const count = await db.addWarn(target.id, msg.guild.id, reason, msg.author);
+        
+        // 5 warns = 2 day mute
+        if (count >= 5) {
             try {
-                await member.timeout(muteDuration, `🛡️ MTX: وصل ${CONFIG.PROTECTION.WARN_LIMIT} تحذيرات - ميوت تلقائي ${CONFIG.PROTECTION.WARN_MUTE_DAYS} يوم`);
-                await WarningDB.setAutoMuted(member.id, m.guild.id);
-                
-                const autoMuteEmbed = Embeds.warn('🚫 ميوت تلقائي!',
-                    `**${member}** وصل **${CONFIG.PROTECTION.WARN_LIMIT}**
+                await target.timeout(172800000, 'reached 5 warnings');
+                await db.clearWarns(target.id, msg.guild.id);
+                msg.reply({ embeds: [embed(yellow, '⚠️ auto mute!', `${target} got 5 warnings and muted 2 days\nwarnings cleared`)] });
+                sendLog(msg.guild, embed(blue, '📝 auto mute', `target: ${target}\nreason: 5 warnings\nmod: bot`));
+            } catch (err) {
+                msg.reply({ embeds: [embed(red, '❌ auto mute failed', err.message)] });
+            }
+            return;
+        }
+        
+        msg.reply({ embeds: [embed(yellow, '⚠️ warned', `${target} warned\nreason: ${reason}\ncount: ${count}/5`)] });
+        sendLog(msg.guild, embed(blue, '📝 warn', `target: ${target}\nmod: ${msg.author}\nreason: ${reason}`));
+    }
+    
+    // ===== تحذيرات (view) =====
+    else if (cmd === 'تحذيرات') {
+        const target = msg.mentions.members.first() || msg.member;
+        const warnings = await db.getWarns(target.id, msg.guild.id);
+        
+        if (!warnings.length) {
+            return msg.reply({ embeds: [embed(blue, 'ℹ️ clean', `${target} has no warnings`)] });
+        }
+        
+        let text = '';
+        for (let i = 0; i < warnings.length; i++) {
+            const w = warnings[i];
+            text += `\`${i + 1}.\` ${w.reason}\nby <@${w.modId}> | ${new Date(w.time).toLocaleDateString()}\n\n`;
+        }
+        
+        const e = new EmbedBuilder()
+            .setTitle(`warnings for ${target.user.tag}`)
+            .setDescription(text)
+            .setColor(yellow)
+            .setFooter({ text: `${warnings.length}/5 warnings | 5 = 2 day mute` });
+        
+        msg.reply({ embeds: [e] });
+    }
+    
+    // ===== مسح تحذير =====
+    else if (cmd === 'مسح_تحذير') {
+        if (!isStarter) return msg.reply({ embeds: [embed(red, '❌ no perms', 'starter only')] });
+        
+        const target = msg.mentions.members.first();
+        if (!target) return msg.reply({ embeds: [embed(red, '❌ usage', '.مسح_تحذير @user [number]')] });
+        
+        const num = parseInt(args.find(a => /^\d+$/.test(a)));
+        
+        if (num && num > 0) {
+            const res = await db.delWarn(target.id, msg.guild.id, num - 1);
+            if (!res) return msg.reply({ embeds: [embed(red, '❌ not found', 'invalid warning number')] });
+            msg.reply({ embeds: [embed(green, '✅ deleted', `warning #${num} for ${target} removed`)] });
+        } else {
+            await db.clearWarns(target.id, msg.guild.id);
+            msg.reply({ embeds: [embed(green, '✅ cleared', `all warnings for ${target} cleared`)] });
+        }
+        
+        sendLog(msg.guild, embed(blue, '📝 clear warns', `target: ${target}\nmod: ${msg.author}`));
+    }
+    
+    // ===== ق (lock) =====
+    else if (cmd === 'ق') {
+        if (!isStarter) return msg.reply({ embeds: [embed(red, '❌ no perms', 'starter only')] });
+        
+        const ch = msg.mentions.channels.first() || msg.channel;
+        try {
+            await ch.permissionOverwrites.edit(msg.guild.roles.everyone, { SendMessages: false });
+            msg.reply({ embeds: [embed(green, '✅ locked', `🔒 ${ch} locked`)] });
+            sendLog(msg.guild, embed(blue, '📝 lock', `channel: ${ch}\nmod: ${msg.author}`));
+        } catch (err) {
+            msg.reply({ embeds: [embed(red, '❌ error', err.message)] });
+        }
+    }
+    
+    // ===== ف (unlock) =====
+    else if (cmd === 'ف') {
+        if (!isStarter) return msg.reply({ embeds: [embed(red, '❌ no perms', 'starter only')] });
+        
+        const ch = msg.mentions.channels.first() || msg.channel;
+        try {
+            await ch.permissionOverwrites.edit(msg.guild.roles.everyone, { SendMessages: true });
+            msg.reply({ embeds: [embed(green, '✅ unlocked', `🔓 ${ch} unlocked`)] });
+            sendLog(msg.guild, embed(blue, '📝 unlock', `channel: ${ch}\nmod: ${msg.author}`));
+        } catch (err) {
+            msg.reply({ embeds: [embed(red, '❌ error', err.message)] });
+        }
+    }
+    
+    // ===== م (purge) =====
+    else if (cmd === 'م') {
+        if (!isStarter) return msg.reply({ embeds: [embed(red, '❌ no perms', 'starter only')] });
+        
+        const amt = parseInt(args[0]) || 10;
+        if (amt > 100) return msg.reply({ embeds: [embed(red, '❌ too many', 'max 100 messages')] });
+        
+        try {
+            const deleted = await msg.channel.bulkDelete(amt + 1, true);
+            const m = await msg.reply({ embeds: [embed(green, '✅ purged', `🗑️ ${deleted.size - 1} messages deleted`)] });
+            setTimeout(() => m.delete().catch(() => {}), 3000);
+            sendLog(msg.guild, embed(blue, '📝 purge', `count: ${deleted.size - 1}\nchannel: ${msg.channel}\nmod: ${msg.author}`));
+        } catch (err) {
+            msg.reply({ embeds: [embed(red, '❌ error', err.message)] });
+        }
+    }
+    
+    // ===== بطي (slowmode) =====
+    else if (cmd === 'بطي') {
+        if (!isStarter) return msg.reply({ embeds: [embed(red, '❌ no perms', 'starter only')] });
+        
+        const sec = parseInt(args[0]) || 0;
+        try {
+            await msg.channel.setRateLimitPerUser(sec);
+            if (sec === 0) {
+                msg.reply({ embeds: [embed(green, '✅ slowmode off', `${msg.channel} slowmode disabled`)] });
+            } else {
+                msg.reply({ embeds: [embed(green, '✅ slowmode set', `${msg.channel} slowmode ${sec}s`)] });
+            }
+        } catch (err) {
+            msg.reply({ embeds: [embed(red, '❌ error', err.message)] });
+        }
+    }
+    
+    // ===== حماية (owner only) =====
+    else if (cmd === 'حماية') {
+        if (!isOwner) return msg.reply({ embeds: [embed(red, '❌ owner only', 'only server owner can use this')] });
+        
+        const action = args[0];
+        const target = msg.mentions.members.first();
+        
+        if (action === 'on' || action === 'تفعيل') {
+            await db.setProt(msg.guild.id, true);
+            msg.reply({ embeds: [embed(green, '✅ protection on', 'protection enabled')] });
+        }
+        else if (action === 'off' || action === 'تعطيل') {
+            await db.setProt(msg.guild.id, false);
+            msg.reply({ embeds: [embed(green, '✅ protection off', 'protection disabled')] });
+        }
+        else if ((action === 'add' || action === 'اضافة') && target) {
+            await db.addProtected(msg.guild.id, target.id);
+            msg.reply({ embeds: [embed(green, '✅ protected', `${target} added to protection list`)] });
+        }
+        else if ((action === 'remove' || action === 'ازالة') && target) {
+            await db.removeProtected(msg.guild.id, target.id);
+            msg.reply({ embeds: [embed(green, '✅ unprotected', `${target} removed from protection list`)] });
+        }
+        else {
+            msg.reply({ embeds: [embed(blue, 'ℹ️ usage', '.حماية [on/off/add/remove] @user')] });
+        }
+    }
+    
+    // ===== العاب =====
+    else if (cmd === 'العاب') {
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('game_roulette').setLabel('🎲 روليت').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('game_mafia').setLabel('🕵️ مافيا').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId('game_castle').setLabel('🏰 كاستل').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('game_ttt').setLabel('⚔️ تكت تو').setStyle(ButtonStyle.Secondary)
+        );
+        
+        msg.reply({
+            embeds: [new EmbedBuilder().setTitle('🎮 games').setDescription('choose a game').setColor(green)],
+            components: [row]
+        });
+    }
+});
+
+// button handler
+client.on('interactionCreate', async i => {
+    if (!i.isButton()) return;
+    if (!i.customId.startsWith('game_')) return;
+    
+    const game = i.customId.replace('game_', '');
+    
+    if (game === 'roulette') {
+        i.reply({ embeds: [new EmbedBuilder().setTitle('🎲 روليت').setDescription('bet on numbers 0-36, colors, odd/even').setColor(0xe74c3c).addFields({ name: 'players', value: '2+', inline: true })], ephemeral: true });
+    }
+    else if (game === 'mafia') {
+        i.reply({ embeds: [new EmbedBuilder().setTitle('🕵️ مافيا').setDescription('villagers vs mafia, needs game master').setColor(0x2c3e50).addFields({ name: 'players',
