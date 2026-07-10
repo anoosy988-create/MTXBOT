@@ -1,49 +1,44 @@
-// ╔═══════════════════════════════════════════════════════════════════════╗
-// ║  📁 MTX Database System - MongoDB Atlas (Persistent on Render)       ║
-// ╚═══════════════════════════════════════════════════════════════════════╝
+// MTX Bot - MongoDB Database Layer
+// Simple, clean, and reliable persistent storage for Render hosting
 
 const mongoose = require('mongoose');
 
 const MONGODB_URI = process.env.MONGODB_URI;
 
 if (!MONGODB_URI) {
-    console.error('❌ [MTX DB] MONGODB_URI not set! Set it in environment variables.');
+    console.error('[MTX DB] Error: MONGODB_URI environment variable is not set');
     process.exit(1);
 }
 
-// Connect to MongoDB
-mongoose.connect(MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-}).then(() => {
-    console.log('✅ [MTX DB] Connected to MongoDB Atlas');
-}).catch(err => {
-    console.error('❌ [MTX DB] MongoDB connection error:', err.message);
-    process.exit(1);
-});
+// Connect to MongoDB Atlas
+mongoose.connect(MONGODB_URI)
+    .then(() => console.log('[MTX DB] Connected to MongoDB Atlas'))
+    .catch(err => {
+        console.error('[MTX DB] Connection failed:', err.message);
+        process.exit(1);
+    });
 
-// ═══════════════════════════════════════════════════════════════════════
-// ⚠️ Warning Schema
-// ═══════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────
+// Warning Schema - Stores user warnings per guild
+// ─────────────────────────────────────────────────────────────
 
-const WarningSchema = new mongoose.Schema({
-    userId: { type: String, required: true },
-    guildId: { type: String, required: true },
+const warningSchema = new mongoose.Schema({
+    userId: { type: String, required: true, index: true },
+    guildId: { type: String, required: true, index: true },
     reason: { type: String, default: 'غير محدد' },
     moderatorId: { type: String, required: true },
     moderatorTag: { type: String, required: true },
-    timestamp: { type: Date, default: Date.now }
+    createdAt: { type: Date, default: Date.now }
 });
 
-WarningSchema.index({ userId: 1, guildId: 1 });
+warningSchema.index({ userId: 1, guildId: 1 });
+const Warning = mongoose.model('Warning', warningSchema);
 
-const WarningModel = mongoose.model('Warning', WarningSchema);
+// ─────────────────────────────────────────────────────────────
+// Guild Config Schema - Stores settings per server
+// ─────────────────────────────────────────────────────────────
 
-// ═══════════════════════════════════════════════════════════════════════
-// ⚙️ Config Schema (log channels, ticket settings)
-// ═══════════════════════════════════════════════════════════════════════
-
-const ConfigSchema = new mongoose.Schema({
+const configSchema = new mongoose.Schema({
     guildId: { type: String, required: true, unique: true },
     logChannel: { type: String, default: null },
     ticketCategoryId: { type: String, default: null },
@@ -53,95 +48,97 @@ const ConfigSchema = new mongoose.Schema({
     ticketCounter: { type: Number, default: 0 }
 });
 
-const ConfigModel = mongoose.model('Config', ConfigSchema);
+const GuildConfig = mongoose.model('GuildConfig', configSchema);
 
-// ═══════════════════════════════════════════════════════════════════════
-// 🎫 Ticket Schema
-// ═══════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────
+// Ticket Schema - Stores active tickets
+// ─────────────────────────────────────────────────────────────
 
-const TicketSchema = new mongoose.Schema({
+const ticketSchema = new mongoose.Schema({
     channelId: { type: String, required: true, unique: true },
-    guildId: { type: String, required: true },
-    num: { type: Number, required: true },
-    owner: { type: String, required: true },
-    claimed: { type: String, default: null },
+    guildId: { type: String, required: true, index: true },
+    number: { type: Number, required: true },
+    ownerId: { type: String, required: true },
+    claimedBy: { type: String, default: null },
     label: { type: String, default: '' },
-    users: [{ type: String }],
+    addedUsers: [{ type: String }],
     createdAt: { type: Date, default: Date.now }
 });
 
-TicketSchema.index({ guildId: 1 });
-TicketSchema.index({ owner: 1 });
+ticketSchema.index({ guildId: 1, ownerId: 1 });
+const Ticket = mongoose.model('Ticket', ticketSchema);
 
-const TicketModel = mongoose.model('Ticket', TicketSchema);
+// ─────────────────────────────────────────────────────────────
+// Warning Database Operations
+// ─────────────────────────────────────────────────────────────
 
-// ═══════════════════════════════════════════════════════════════════════
-// ⚠️ Warning Database
-// ═══════════════════════════════════════════════════════════════════════
-
-class WarningDatabase {
-    async getWarnings(userId, guildId) {
-        const docs = await WarningModel.find({ userId, guildId }).sort({ timestamp: 1 }).lean();
+class WarningDB {
+    async get(userId, guildId) {
+        const docs = await Warning.find({ userId, guildId }).sort({ createdAt: 1 }).lean();
         return docs.map(d => ({
             reason: d.reason,
             moderatorId: d.moderatorId,
             moderatorTag: d.moderatorTag,
-            timestamp: d.timestamp.getTime()
+            timestamp: d.createdAt.getTime()
         }));
     }
 
-    async addWarning(userId, guildId, reason, moderator) {
-        await WarningModel.create({
+    async add(userId, guildId, reason, moderator) {
+        await Warning.create({
             userId,
             guildId,
             reason,
             moderatorId: moderator.id,
             moderatorTag: moderator.tag
         });
-        const total = await WarningModel.countDocuments({ userId, guildId });
+        const total = await Warning.countDocuments({ userId, guildId });
         return { total };
     }
 
-    async removeWarning(userId, guildId, index) {
-        const docs = await WarningModel.find({ userId, guildId }).sort({ timestamp: 1 });
+    async remove(userId, guildId, index) {
+        const docs = await Warning.find({ userId, guildId }).sort({ createdAt: 1 });
         if (index < 0 || index >= docs.length) return false;
-        await WarningModel.deleteOne({ _id: docs[index]._id });
+        await Warning.deleteOne({ _id: docs[index]._id });
         return true;
     }
 
-    async clearWarnings(userId, guildId) {
-        await WarningModel.deleteMany({ userId, guildId });
+    async clear(userId, guildId) {
+        await Warning.deleteMany({ userId, guildId });
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// ⚙️ Config Database
-// ═══════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────
+// Guild Config Operations
+// ─────────────────────────────────────────────────────────────
 
-class ConfigDatabase {
-    async _getOrCreate(guildId) {
-        let doc = await ConfigModel.findOne({ guildId });
-        if (!doc) {
-            doc = await ConfigModel.create({ guildId });
-        }
-        return doc;
-    }
-
-    async getLogChannel(guildId) {
-        const doc = await ConfigModel.findOne({ guildId }).lean();
-        return doc?.logChannel || null;
+class ConfigDB {
+    async get(guildId) {
+        return await GuildConfig.findOne({ guildId }).lean();
     }
 
     async setLogChannel(guildId, channelId) {
-        await ConfigModel.findOneAndUpdate(
+        await GuildConfig.findOneAndUpdate(
             { guildId },
             { $set: { logChannel: channelId } },
-            { upsert: true, new: true }
+            { upsert: true }
+        );
+    }
+
+    async getLogChannel(guildId) {
+        const doc = await GuildConfig.findOne({ guildId }).lean();
+        return doc?.logChannel || null;
+    }
+
+    async setTicketConfig(guildId, { logsId, categoryId, roleId }) {
+        await GuildConfig.findOneAndUpdate(
+            { guildId },
+            { $set: { ticketLogsId: logsId, ticketCategoryId: categoryId, ticketRoleId: roleId } },
+            { upsert: true }
         );
     }
 
     async getTicketConfig(guildId) {
-        const doc = await ConfigModel.findOne({ guildId }).lean();
+        const doc = await GuildConfig.findOne({ guildId }).lean();
         if (!doc) return null;
         return {
             logsId: doc.ticketLogsId,
@@ -151,46 +148,28 @@ class ConfigDatabase {
         };
     }
 
-    async setTicketConfig(guildId, config) {
-        await ConfigModel.findOneAndUpdate(
-            { guildId },
-            { $set: {
-                ticketLogsId: config.logsId,
-                ticketCategoryId: config.categoryId,
-                ticketRoleId: config.roleId
-            }},
-            { upsert: true, new: true }
-        );
-    }
-
-    async getTicketOptions(guildId) {
-        const doc = await ConfigModel.findOne({ guildId }).lean();
-        return doc?.ticketOptions || [];
-    }
-
     async addTicketOption(guildId, label, value) {
-        await ConfigModel.findOneAndUpdate(
+        await GuildConfig.findOneAndUpdate(
             { guildId },
-            { $push: { ticketOptions: { label, value } }},
-            { upsert: true, new: true }
+            { $push: { ticketOptions: { label, value } } },
+            { upsert: true }
         );
     }
 
     async removeTicketOption(guildId, value) {
-        await ConfigModel.findOneAndUpdate(
+        await GuildConfig.findOneAndUpdate(
             { guildId },
-            { $pull: { ticketOptions: { value } }},
-            { new: true }
+            { $pull: { ticketOptions: { value } } }
         );
     }
 
     async getTicketCounter(guildId) {
-        const doc = await ConfigModel.findOne({ guildId }).lean();
+        const doc = await GuildConfig.findOne({ guildId }).lean();
         return doc?.ticketCounter || 0;
     }
 
     async incrementTicketCounter(guildId) {
-        const doc = await ConfigModel.findOneAndUpdate(
+        const doc = await GuildConfig.findOneAndUpdate(
             { guildId },
             { $inc: { ticketCounter: 1 } },
             { upsert: true, new: true }
@@ -199,88 +178,84 @@ class ConfigDatabase {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// 🎫 Ticket Database
-// ═══════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────
+// Ticket Operations
+// ─────────────────────────────────────────────────────────────
 
-class TicketDatabase {
-    async getAllTickets() {
-        const docs = await TicketModel.find().lean();
+class TicketDB {
+    async getAll() {
+        const docs = await Ticket.find().lean();
         const map = new Map();
-        const data = {};
         docs.forEach(d => {
-            const obj = {
+            map.set(d.channelId, {
                 g: d.guildId,
-                num: d.num,
-                owner: d.owner,
-                claimed: d.claimed,
+                num: d.number,
+                owner: d.ownerId,
+                claimed: d.claimedBy,
                 label: d.label,
-                users: d.users
-            };
-            map.set(d.channelId, obj);
-            data[d.channelId] = obj;
+                users: d.addedUsers
+            });
         });
-        return { map, data };
+        return map;
     }
 
-    async getTicket(channelId) {
-        const doc = await TicketModel.findOne({ channelId }).lean();
+    async get(channelId) {
+        const doc = await Ticket.findOne({ channelId }).lean();
         if (!doc) return null;
         return {
             g: doc.guildId,
-            num: doc.num,
-            owner: doc.owner,
-            claimed: doc.claimed,
+            num: doc.number,
+            owner: doc.ownerId,
+            claimed: doc.claimedBy,
             label: doc.label,
-            users: doc.users
+            users: doc.addedUsers
         };
     }
 
-    async getUserTickets(guildId, userId) {
-        const docs = await TicketModel.find({ guildId, owner: userId }).lean();
+    async getByUser(guildId, ownerId) {
+        const docs = await Ticket.find({ guildId, ownerId }).lean();
         return docs.map(d => ({
             channelId: d.channelId,
-            num: d.num,
-            owner: d.owner,
-            claimed: d.claimed,
+            num: d.number,
+            owner: d.ownerId,
+            claimed: d.claimedBy,
             label: d.label,
-            users: d.users
+            users: d.addedUsers
         }));
     }
 
-    async createTicket(channelId, guildId, num, owner, label) {
-        await TicketModel.create({
+    async create(channelId, guildId, number, ownerId, label) {
+        await Ticket.create({
             channelId,
             guildId,
-            num,
-            owner,
+            number,
+            ownerId,
             label,
-            users: [owner]
+            addedUsers: [ownerId]
         });
     }
 
-    async updateTicket(channelId, updates) {
-        await TicketModel.findOneAndUpdate(
+    async update(channelId, updates) {
+        const setObj = {};
+        if (updates.claimed !== undefined) setObj.claimedBy = updates.claimed;
+        if (updates.label !== undefined) setObj.label = updates.label;
+
+        await Ticket.findOneAndUpdate({ channelId }, { $set: setObj });
+    }
+
+    async addUser(channelId, userId) {
+        await Ticket.findOneAndUpdate(
             { channelId },
-            { $set: updates },
-            { new: true }
+            { $addToSet: { addedUsers: userId } }
         );
     }
 
-    async addUserToTicket(channelId, userId) {
-        await TicketModel.findOneAndUpdate(
-            { channelId },
-            { $addToSet: { users: userId } },
-            { new: true }
-        );
-    }
-
-    async deleteTicket(channelId) {
-        await TicketModel.deleteOne({ channelId });
+    async delete(channelId) {
+        await Ticket.deleteOne({ channelId });
     }
 
     async getCounters() {
-        const docs = await ConfigModel.find().lean();
+        const docs = await GuildConfig.find().lean();
         const counters = {};
         docs.forEach(d => {
             if (d.ticketCounter) counters[d.guildId] = d.ticketCounter;
@@ -290,7 +265,7 @@ class TicketDatabase {
 }
 
 module.exports = {
-    WarningDB: new WarningDatabase(),
-    ConfigDB: new ConfigDatabase(),
-    TicketDB: new TicketDatabase()
+    WarningDB: new WarningDB(),
+    ConfigDB: new ConfigDB(),
+    TicketDB: new TicketDB()
 };
