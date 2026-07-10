@@ -7,9 +7,9 @@
 // ║   ██║ ╚═╝ ██║   ██║   ██╔╝ ██╗    ██████╔╝╚██████╔╝   ██║            ║
 // ║   ╚═╝     ╚═╝   ╚═╝   ╚═╝  ╚═╝    ╚═════╝  ╚═════╝    ╚═╝            ║
 // ║                                                                       ║
-// ║   🤖 MTX PROTECTION BOT v4.1 - FULL FIX                              ║
+// ║   🤖 MTX PROTECTION BOT v4.2 - LOCAL STORAGE                          ║
 // ║   صناعة مبرمج محترف - نظام حماية وإدارة متكامل                       ║
-// ║   Discord.js v14 | MongoDB | Node.js 18+                           ║
+// ║   Discord.js v14 | JSON Database | Node.js 18+                       ║
 // ║                                                                       ║
 // ╚═══════════════════════════════════════════════════════════════════════╝
 
@@ -27,8 +27,8 @@ const {
     ChannelType
 } = require('discord.js');
 
-const mongoose = require('mongoose');
 const http = require('http');
+const { WarningDB, ProtectionDB } = require('./database');
 
 // ═══════════════════════════════════════════════════════════════════════
 // ⚙️ الإعدادات الرئيسية
@@ -73,50 +73,6 @@ const CONFIG = {
         DARK: 0x2c3e50
     }
 };
-
-// ═══════════════════════════════════════════════════════════════════════
-// 🗄️ قاعدة البيانات - MongoDB
-// ═══════════════════════════════════════════════════════════════════════
-
-const warnSchema = new mongoose.Schema({
-    userId: { type: String, required: true },
-    guildId: { type: String, required: true },
-    warnings: [{
-        reason: { type: String, default: 'غير محدد' },
-        moderatorId: { type: String, required: true },
-        moderatorTag: { type: String, required: true },
-        timestamp: { type: Date, default: Date.now }
-    }],
-    totalWarnings: { type: Number, default: 0 },
-    autoMuted: { type: Boolean, default: false },
-    lastAutoMute: { type: Date, default: null }
-}, { timestamps: true });
-
-warnSchema.index({ userId: 1, guildId: 1 }, { unique: true });
-
-const protectionSchema = new mongoose.Schema({
-    guildId: { type: String, required: true, unique: true },
-    enabled: { type: Boolean, default: true },
-    protectedUsers: [{ type: String }],
-    suspiciousBots: [{ type: String }],
-    logChannelId: { type: String, default: null }
-}, { timestamps: true });
-
-const WarnModel = mongoose.model('Warning', warnSchema);
-const ProtectionModel = mongoose.model('Protection', protectionSchema);
-
-async function connectDatabase() {
-    try {
-        await mongoose.connect(process.env.MONGODB_URI, {
-            useNewUrlParser: true,
-            useUnifiedTopology: true
-        });
-        console.log('✅ [MTX] متصل بـ MongoDB بنجاح!');
-    } catch (err) {
-        console.error('❌ [MTX] خطأ في الاتصال بـ MongoDB:', err);
-        process.exit(1);
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════
 // 🎨 نظام الإمبدات الاحترافي
@@ -188,7 +144,7 @@ class Embeds {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 🛡️ نظام الحماية المتقدم - المُصلح
+// 🛡️ نظام الحماية المتقدم
 // ═══════════════════════════════════════════════════════════════════════
 
 class ProtectionSystem {
@@ -199,15 +155,12 @@ class ProtectionSystem {
     }
 
     async sendLog(guild, embed) {
-        const data = await ProtectionModel.findOne({ guildId: guild.id });
-        if (!data?.logChannelId) return;
-        const ch = guild.channels.cache.get(data.logChannelId);
+        const chId = ProtectionDB.getLogChannel(guild.id);
+        if (!chId) return;
+        const ch = guild.channels.cache.get(chId);
         if (ch) try { await ch.send({ embeds: [embed] }); } catch(e) {}
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 🔒 الحماية من البوتات المشبوهة - مُصلح بالكامل
-    // ═══════════════════════════════════════════════════════════════════
     async checkBotEntry(member) {
         console.log(`[MTX DEBUG] ====== دخل عضو جديد ======`);
         console.log(`[MTX DEBUG] الاسم: ${member.user.tag}`);
@@ -222,19 +175,10 @@ class ProtectionSystem {
         console.log(`[MTX DEBUG] ✅ هذا بوت! نبدأ الفحص...`);
 
         const guild = member.guild;
-
-        // ننتظر شوي عشان Audit Log يتسجل
         await new Promise(resolve => setTimeout(resolve, 1500));
 
-        // نجيب إعدادات الحماية
-        let data = await ProtectionModel.findOne({ guildId: guild.id });
-        if (!data) {
-            data = await ProtectionModel.create({ guildId: guild.id, enabled: true, protectedUsers: [] });
-            console.log(`[MTX DEBUG] ✅ سويت إعدادات افتراضية للسيرفر`);
-        }
-
-        if (data.enabled === false) {
-            console.log(`[MTX DEBUG] ❌ الحماية معطلة في هذا السيرفر`);
+        if (!ProtectionDB.isEnabled(guild.id)) {
+            console.log(`[MTX DEBUG] ❌ الحماية معطلة`);
             return;
         }
 
@@ -244,43 +188,21 @@ class ProtectionSystem {
             const owner = await guild.fetchOwner();
             console.log(`[MTX DEBUG] مالك السيرفر: ${owner.tag}`);
 
-            // نجيب Audit Log
             let adder = null;
-            let auditFound = false;
-
             try {
-                console.log(`[MTX DEBUG] نجيب Audit Logs...`);
-                const logs = await guild.fetchAuditLogs({ 
-                    limit: 10, 
-                    type: AuditLogEvent.BotAdd 
-                });
-                
-                console.log(`[MTX DEBUG] لقينا ${logs.entries.size} Audit Log`);
-                
-                // ندور على البوت المضاف
-                const entry = logs.entries.find(e => {
-                    console.log(`[MTX DEBUG] نفحص: target=${e.target?.id}, member=${member.id}`);
-                    return e.target?.id === member.id;
-                });
-
+                const logs = await guild.fetchAuditLogs({ limit: 10, type: AuditLogEvent.BotAdd });
+                const entry = logs.entries.find(e => e.target?.id === member.id);
                 if (entry) {
                     adder = entry.executor;
-                    auditFound = true;
                     console.log(`[MTX DEBUG] ✅ لقينا مين ضاف البوت: ${adder?.tag}`);
                 } else {
-                    console.log(`[MTX DEBUG] ❌ ما لقينا Audit Log للبوت هذا`);
+                    console.log(`[MTX DEBUG] ❌ ما لقينا Audit Log`);
                 }
             } catch(e) {
-                console.log(`[MTX DEBUG] ❌ خطأ في Audit Log: ${e.message}`);
+                console.log(`[MTX DEBUG] ❌ خطأ Audit Log: ${e.message}`);
             }
 
-            // إذا ما لقينا مين ضافه، نستخدم fallback
-            if (!adder) {
-                console.log(`[MTX DEBUG] نستخدم fallback - نفترض إن الشخص غير معروف`);
-            }
-
-            // نتحقق إذا الشخص محمي
-            const isProtected = adder ? (data.protectedUsers || []).includes(adder.id) : false;
+            const isProtected = adder ? ProtectionDB.isProtected(guild.id, adder.id) : false;
             const isOwner = adder ? adder.id === owner.id : false;
 
             console.log(`[MTX DEBUG] adder: ${adder?.tag || 'غير معروف'}`);
@@ -288,42 +210,33 @@ class ProtectionSystem {
             console.log(`[MTX DEBUG] isOwner: ${isOwner}`);
 
             if (isProtected || isOwner) {
-                console.log(`[MTX DEBUG] ✅ الشخص محمي، ما نسوي شي`);
+                console.log(`[MTX DEBUG] ✅ محمي، ما نسوي شي`);
                 return;
             }
 
-            console.log(`[MTX DEBUG] 🚨 الشخص غير محمي! نبدأ الإجراءات...`);
+            console.log(`[MTX DEBUG] 🚨 غير محمي! نبدأ الإجراءات...`);
 
-            // طرد البوت
             try {
                 await member.kick('🛡️ MTX: بوت مشبوه - غير مصرح');
                 console.log(`[MTX DEBUG] ✅ البوت تم طرده`);
             } catch(e) {
-                console.error(`[MTX DEBUG] ❌ ما قدرت أطرد البوت: ${e.message}`);
+                console.error(`[MTX DEBUG] ❌ ما قدرت أطرد: ${e.message}`);
                 return;
             }
 
-            // رسالة للأونر
             const embed = Embeds.protection('تم طرد بوت مشبوه!',
                 `**تم اكتشاف بوت مشبوه وطرده تلقائياً**\n\n` +
                 `🤖 **اسم البوت:** ${member.user.tag} (\`${member.id}\`)\n` +
-                `👤 **الشخص اللي ضافه:** ${adder ? `${adder} (\`${adder.id}\`)` : 'غير معروف (تم الكشف عبر النظام)'}\n` +
+                `👤 **الشخص اللي ضافه:** ${adder ? `${adder} (\`${adder.id}\`)` : 'غير معروف'}\n` +
                 `⏰ **الوقت:** ${new Date().toLocaleString('ar-SA')}\n` +
                 `⚡ **الإجراء:** تم الطرد الفوري\n\n` +
                 `📝 **ملاحظة:** إذا تبي تسمح ببوت معين، استخدم:\n` +
                 `\`.حماية اضافة @الشخص\``
             );
 
-            try {
-                await owner.send({ embeds: [embed] });
-                console.log(`[MTX DEBUG] ✅ رسالة وصلت للأونر`);
-            } catch(e) {
-                console.log(`[MTX DEBUG] ❌ ما قدرت أرسل للأونر: ${e.message}`);
-            }
-
+            try { await owner.send({ embeds: [embed] }); } catch(e) {}
             await this.sendLog(guild, embed);
 
-            // باند الشخص اللي ضافه
             if (adder && adder.id !== owner.id) {
                 try {
                     await guild.members.ban(adder.id, { 
@@ -339,14 +252,11 @@ class ProtectionSystem {
                         `🚫 **الإجراء:** تم التبنيد`
                     );
 
-                    try {
-                        await owner.send({ embeds: [banEmbed] });
-                    } catch(e) {}
-
+                    try { await owner.send({ embeds: [banEmbed] }); } catch(e) {}
                     await this.sendLog(guild, banEmbed);
-                    console.log(`[MTX DEBUG] ✅ الشerson تم تبنيده`);
+                    console.log(`[MTX DEBUG] ✅ الشخص تم تبنيده`);
                 } catch(e) {
-                    console.error(`[MTX DEBUG] ❌ ما قدرت أبنيد الشخص: ${e.message}`);
+                    console.error(`[MTX DEBUG] ❌ ما قدرت أبنيد: ${e.message}`);
                 }
             }
 
@@ -357,9 +267,6 @@ class ProtectionSystem {
         console.log(`[MTX DEBUG] ====== انتهى الفحص ======\n`);
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 🚨 الحماية من السبام
-    // ═══════════════════════════════════════════════════════════════════
     async checkSpam(message) {
         if (message.author.bot || message.member?.permissions.has(PermissionsBitField.Flags.Administrator)) return false;
         
@@ -392,9 +299,6 @@ class ProtectionSystem {
         return false;
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 🔗 الحماية من الروابط
-    // ═══════════════════════════════════════════════════════════════════
     async checkLinks(message) {
         if (message.author.bot) return false;
         if (message.member?.permissions.has(PermissionsBitField.Flags.Administrator)) return false;
@@ -456,19 +360,16 @@ class MTXBot extends Client {
         console.log(`
     ╔═══════════════════════════════════════════════════╗
     ║                                                   ║
-    ║        🤖 MTX BOT v4.1 - ONLINE                   ║
+    ║        🤖 MTX BOT v4.2 - ONLINE                   ║
     ║        الحالة: 🟢 أخضر (Online)                  ║
+    ║        المخزن: 📁 محلي (JSON)                    ║
     ║        السيرفرات: ${this.guilds.cache.size.toString().padEnd(27)}║
-    ║        المستخدمين: ${this.users.cache.size.toString().padEnd(26)}║
     ║                                                   ║
     ╚═══════════════════════════════════════════════════╝
         `);
 
         await this.user.setPresence({
-            activities: [{ 
-                name: '🛡️ الحماية | .العاب للإيفنتات', 
-                type: 3 
-            }],
+            activities: [{ name: '🛡️ الحماية | .العاب للإيفنتات', type: 3 }],
             status: 'online'
         });
 
@@ -537,11 +438,7 @@ class MTXBot extends Client {
         if (i.commandName === 'لوق') {
             if (!isStarter) return i.reply({ embeds: [Embeds.error('صلاحيات', 'بس الستيرتر!')], ephemeral: true });
             const ch = i.options.getChannel('channel');
-            await ProtectionModel.findOneAndUpdate(
-                { guildId: i.guildId },
-                { logChannelId: ch.id },
-                { upsert: true, new: true }
-            );
+            ProtectionDB.setLogChannel(i.guildId, ch.id);
             await i.reply({ embeds: [Embeds.success('إعدادات اللوق', `📋 **${ch}** تم تحديده كروم للوق!`)] });
         }
 
@@ -549,26 +446,20 @@ class MTXBot extends Client {
             const uptime = new Date() - this.startTime;
             const h = Math.floor(uptime / 3600000);
             const m = Math.floor((uptime % 3600000) / 60000);
-            const data = await ProtectionModel.findOne({ guildId: i.guildId });
             
             const embed = new EmbedBuilder()
                 .setTitle('🤖 حالة MTX Bot')
                 .setDescription(`**الحالة:** 🟢 Online\n**الوقت:** ${h}س ${m}د`)
                 .setColor(CONFIG.COLORS.SUCCESS)
                 .addFields(
-                    { name: '🛡️ الحماية', value: data?.enabled !== false ? '✅ مفعلة' : '❌ معطلة', inline: true },
+                    { name: '🛡️ الحماية', value: ProtectionDB.isEnabled(i.guildId) ? '✅ مفعلة' : '❌ معطلة', inline: true },
                     { name: '📊 السيرفرات', value: String(this.guilds.cache.size), inline: true },
-                    { name: '👥 المستخدمين', value: String(this.users.cache.size), inline: true },
-                    { name: '📋 روم اللوق', value: data?.logChannelId ? `<#${data.logChannelId}>` : 'غير محدد', inline: true }
+                    { name: '📋 روم اللوق', value: ProtectionDB.getLogChannel(i.guildId) ? `<#${ProtectionDB.getLogChannel(i.guildId)}>` : 'غير محدد', inline: true }
                 )
                 .setTimestamp();
             await i.reply({ embeds: [embed] });
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // 🔧 نظام الأوامر التقليدية
-    // ═══════════════════════════════════════════════════════════════════
 
     async handleCommand(message) {
         const content = message.content.trim();
@@ -643,9 +534,6 @@ class MTXBot extends Client {
         return m.reply({ embeds: [Embeds.error('صلاحيات', '⛔ بس الستيرتر يقدر يستخدم هذا الأمر!')] });
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 🚫 باند
-    // ═══════════════════════════════════════════════════════════════════
     async cmdBan(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
@@ -676,9 +564,6 @@ class MTXBot extends Client {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 🔓 فك باند
-    // ═══════════════════════════════════════════════════════════════════
     async cmdUnban(m, args) {
         const uid = args[0];
         if (!uid || !/^\d+$/.test(uid)) return m.reply({ embeds: [Embeds.error('خطأ', 'حط ايدي صحيح!')] });
@@ -693,9 +578,6 @@ class MTXBot extends Client {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 👢 طرد
-    // ═══════════════════════════════════════════════════════════════════
     async cmdKick(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
@@ -712,9 +594,6 @@ class MTXBot extends Client {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 🔇 كتم
-    // ═══════════════════════════════════════════════════════════════════
     async cmdMute(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
@@ -734,9 +613,6 @@ class MTXBot extends Client {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 🔊 فك كتم
-    // ═══════════════════════════════════════════════════════════════════
     async cmdUnmute(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
@@ -750,31 +626,15 @@ class MTXBot extends Client {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // ⚠️ تحذير - 5 = يومين ميوت
-    // ═══════════════════════════════════════════════════════════════════
     async cmdWarn(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
 
         const reason = args.filter(a => !a.includes(member.id)).join(' ') || 'غير محدد';
 
-        let record = await WarnModel.findOne({ userId: member.id, guildId: m.guild.id });
-        if (!record) {
-            record = new WarnModel({ userId: member.id, guildId: m.guild.id, warnings: [], totalWarnings: 0 });
-        }
+        const result = WarningDB.addWarning(member.id, m.guild.id, reason, m.author);
 
-        record.warnings.push({
-            reason,
-            moderatorId: m.author.id,
-            moderatorTag: m.author.tag,
-            timestamp: new Date()
-        });
-        record.totalWarnings = record.warnings.length;
-        await record.save();
-
-        // 5 تحذيرات = ميوت يومين
-        if (record.totalWarnings >= CONFIG.PROTECTION.WARN_LIMIT) {
+        if (result.total >= CONFIG.PROTECTION.WARN_LIMIT) {
             const muteMs = CONFIG.PROTECTION.WARN_MUTE_DAYS * 24 * 60 * 60 * 1000;
             try {
                 await member.timeout(muteMs, `🛡️ MTX: وصل ${CONFIG.PROTECTION.WARN_LIMIT} تحذيرات`);
@@ -788,7 +648,7 @@ class MTXBot extends Client {
                 await m.reply({ embeds: [autoEmbed] });
                 await this.protection.sendLog(m.guild, Embeds.logAction('ميوت تلقائي', m.author, member.user, '5 تحذيرات', { 'المدة': `${CONFIG.PROTECTION.WARN_MUTE_DAYS} يومين` }));
 
-                await WarnModel.findOneAndDelete({ userId: member.id, guildId: m.guild.id });
+                WarningDB.clearWarnings(member.id, m.guild.id);
             } catch(e) {
                 m.reply({ embeds: [Embeds.error('خطأ', e.message)] });
             }
@@ -796,24 +656,21 @@ class MTXBot extends Client {
         }
 
         const embed = Embeds.warn('تم التحذير',
-            `**${member}**\n📌 **السبب:** ${reason}\n⚠️ **التحذيرات:** ${record.totalWarnings}/${CONFIG.PROTECTION.WARN_LIMIT}\n🔧 **بواسطة:** ${m.author}`
+            `**${member}**\n📌 **السبب:** ${reason}\n⚠️ **التحذيرات:** ${result.total}/${CONFIG.PROTECTION.WARN_LIMIT}\n🔧 **بواسطة:** ${m.author}`
         );
         await m.reply({ embeds: [embed] });
-        await this.protection.sendLog(m.guild, Embeds.logAction('تحذير', m.author, member.user, reason, { 'العدد': `${record.totalWarnings}/${CONFIG.PROTECTION.WARN_LIMIT}` }));
+        await this.protection.sendLog(m.guild, Embeds.logAction('تحذير', m.author, member.user, reason, { 'العدد': `${result.total}/${CONFIG.PROTECTION.WARN_LIMIT}` }));
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 📋 عرض التحذيرات
-    // ═══════════════════════════════════════════════════════════════════
     async cmdWarnings(m, args) {
         const member = m.mentions.members.first() || m.member;
-        const record = await WarnModel.findOne({ userId: member.id, guildId: m.guild.id });
+        const warnings = WarningDB.getWarnings(member.id, m.guild.id);
 
-        if (!record || record.warnings.length === 0) {
+        if (warnings.length === 0) {
             return m.reply({ embeds: [Embeds.info('نظيف ✅', `**${member}** ما عنده ولا تحذير!`)] });
         }
 
-        const warnList = record.warnings.map((w, i) => 
+        const warnList = warnings.map((w, i) => 
             `\`${i + 1}.\` **${w.reason}**\n├ 👤 <@${w.moderatorId}>\n└ 🕐 ${new Date(w.timestamp).toLocaleString('ar-SA')}`
         ).join('\n\n');
 
@@ -822,45 +679,37 @@ class MTXBot extends Client {
             .setDescription(warnList)
             .setColor(CONFIG.COLORS.WARN)
             .setThumbnail(member.user.displayAvatarURL())
-            .setFooter({ text: `${record.warnings.length}/${CONFIG.PROTECTION.WARN_LIMIT} | بعد ${CONFIG.PROTECTION.WARN_LIMIT} = ميوت ${CONFIG.PROTECTION.WARN_MUTE_DAYS} يوم` })
+            .setFooter({ text: `${warnings.length}/${CONFIG.PROTECTION.WARN_LIMIT} | بعد ${CONFIG.PROTECTION.WARN_LIMIT} = ميوت ${CONFIG.PROTECTION.WARN_MUTE_DAYS} يوم` })
             .setTimestamp();
 
         await m.reply({ embeds: [embed] });
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 🗑️ مسح تحذير
-    // ═══════════════════════════════════════════════════════════════════
     async cmdClearWarn(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
 
         const index = parseInt(args.find(a => /^\d+$/.test(a)));
-        const record = await WarnModel.findOne({ userId: member.id, guildId: m.guild.id });
+        const warnings = WarningDB.getWarnings(member.id, m.guild.id);
 
-        if (!record || record.warnings.length === 0) {
+        if (warnings.length === 0) {
             return m.reply({ embeds: [Embeds.error('خطأ', 'ما عنده تحذيرات!')] });
         }
 
         if (index && index > 0) {
-            if (index > record.warnings.length) {
-                return m.reply({ embeds: [Embeds.error('خطأ', `رقم غير موجود! عنده بس ${record.warnings.length}`)] });
+            if (index > warnings.length) {
+                return m.reply({ embeds: [Embeds.error('خطأ', `رقم غير موجود! عنده بس ${warnings.length}`)] });
             }
-            record.warnings.splice(index - 1, 1);
-            record.totalWarnings = record.warnings.length;
-            await record.save();
-            m.reply({ embeds: [Embeds.success('تم المسح', `🗑️ تم مسح التحذير رقم **${index}**! الآن: **${record.totalWarnings}**`)] });
+            WarningDB.removeWarning(member.id, m.guild.id, index - 1);
+            m.reply({ embeds: [Embeds.success('تم المسح', `🗑️ تم مسح التحذير رقم **${index}**!`)] });
         } else {
-            await WarnModel.findOneAndDelete({ userId: member.id, guildId: m.guild.id });
+            WarningDB.clearWarnings(member.id, m.guild.id);
             m.reply({ embeds: [Embeds.success('تم المسح', `🗑️ تم مسح جميع تحذيرات **${member}**!`)] });
         }
 
         await this.protection.sendLog(m.guild, Embeds.logAction('مسح تحذيرات', m.author, member.user, 'مسح'));
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 🔒 قفل
-    // ═══════════════════════════════════════════════════════════════════
     async cmdLock(m, args) {
         const ch = m.mentions.channels.first() || m.channel;
         try {
@@ -872,9 +721,6 @@ class MTXBot extends Client {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 🔓 فتح
-    // ═══════════════════════════════════════════════════════════════════
     async cmdUnlock(m, args) {
         const ch = m.mentions.channels.first() || m.channel;
         try {
@@ -886,9 +732,6 @@ class MTXBot extends Client {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 🗑️ مسح
-    // ═══════════════════════════════════════════════════════════════════
     async cmdPurge(m, args) {
         const amount = parseInt(args[0]) || 10;
         if (amount > 100) return m.reply({ embeds: [Embeds.error('خطأ', 'الحد الأقصى 100!')] });
@@ -904,9 +747,6 @@ class MTXBot extends Client {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 🐢 تبطيء
-    // ═══════════════════════════════════════════════════════════════════
     async cmdSlowmode(m, args) {
         const sec = parseInt(args[0]) || 0;
         if (sec < 0) return m.reply({ embeds: [Embeds.error('خطأ', 'لازم 0 أو أكثر!')] });
@@ -922,31 +762,28 @@ class MTXBot extends Client {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 🛡️ إدارة الحماية
-    // ═══════════════════════════════════════════════════════════════════
     async cmdProtection(m, args) {
         const action = args[0];
         const member = m.mentions.members.first();
         const gid = m.guild.id;
 
         if (action === 'تفعيل' || action === 'on') {
-            await ProtectionModel.findOneAndUpdate({ guildId: gid }, { enabled: true }, { upsert: true, new: true });
+            ProtectionDB.setEnabled(gid, true);
             return m.reply({ embeds: [Embeds.success('الحماية', '✅ تم التفعيل!')] });
         }
 
         if (action === 'تعطيل' || action === 'off') {
-            await ProtectionModel.findOneAndUpdate({ guildId: gid }, { enabled: false }, { upsert: true, new: true });
+            ProtectionDB.setEnabled(gid, false);
             return m.reply({ embeds: [Embeds.success('الحماية', '❌ تم التعطيل!')] });
         }
 
         if ((action === 'اضافة' || action === 'add') && member) {
-            await ProtectionModel.findOneAndUpdate({ guildId: gid }, { $addToSet: { protectedUsers: member.id } }, { upsert: true, new: true });
+            ProtectionDB.addProtected(gid, member.id);
             return m.reply({ embeds: [Embeds.success('الحماية', `🛡️ **${member}** تمت الإضافة!`)] });
         }
 
         if ((action === 'ازالة' || action === 'remove') && member) {
-            await ProtectionModel.findOneAndUpdate({ guildId: gid }, { $pull: { protectedUsers: member.id } }, { new: true });
+            ProtectionDB.removeProtected(gid, member.id);
             return m.reply({ embeds: [Embeds.success('الحماية', `🛡️ **${member}** تمت الإزالة!`)] });
         }
 
@@ -958,9 +795,6 @@ class MTXBot extends Client {
         )] });
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // 🎮 العاب
-    // ═══════════════════════════════════════════════════════════════════
     async cmdGames(m) {
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('game_roulette').setLabel('🎲 روليت').setStyle(ButtonStyle.Success),
@@ -1039,7 +873,6 @@ server.listen(PORT, () => {
 const bot = new MTXBot();
 
 async function start() {
-    await connectDatabase();
     await bot.login(process.env.TOKEN);
 }
 
