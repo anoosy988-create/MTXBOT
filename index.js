@@ -365,6 +365,11 @@ class MTXBot extends Client {
         this.on('channelCreate', (ch) => this.onChannelCreate(ch));
         this.on('channelDelete', (ch) => this.onChannelDelete(ch));
         this.on('channelUpdate', (oldCh, newCh) => this.onChannelUpdate(oldCh, newCh));
+
+        // Role protection events
+        this.on('roleCreate', (role) => this.onRoleCreate(role));
+        this.on('roleDelete', (role) => this.onRoleDelete(role));
+        this.on('roleUpdate', (oldRole, newRole) => this.onRoleUpdate(oldRole, newRole));
     }
 
     async onReady() {
@@ -888,67 +893,152 @@ class MTXBot extends Client {
     async onChannelCreate(channel) {
         if (!channel.guild) return;
 
+        let executor = null;
+        let foundViaAudit = false;
+
+        // Try Audit Log first
         try {
             const logs = await channel.guild.fetchAuditLogs({
-                limit: 1,
+                limit: 5,
                 type: AuditLogEvent.ChannelCreate
             });
 
-            const entry = logs.entries.first();
-            if (!entry || entry.target?.id !== channel.id) return;
-            if (Date.now() - entry.createdTimestamp > 5000) return; // Too old
-
-            const executor = entry.executor;
-            console.log(`[MTX] روم جديد: #${channel.name} | أنشأه: ${executor?.tag || 'unknown'}`);
-
-            await this.protection.checkChannelCreate(channel, executor);
+            const entry = logs.entries.find(e => e.target?.id === channel.id);
+            if (entry && (Date.now() - entry.createdTimestamp <= 10000)) {
+                executor = entry.executor;
+                foundViaAudit = true;
+                console.log(`[MTX NUKE] ✅ Audit Log: #${channel.name} | أنشأه: ${executor?.tag}`);
+            }
         } catch(e) {
-            console.error('[MTX NUKE] خطأ في channelCreate:', e.message);
+            console.log(`[MTX NUKE] ⚠️ Audit Log فشل: ${e.message}`);
         }
+
+        // Fallback: track all recent actions on this channel
+        if (!executor) {
+            console.log(`[MTX NUKE] ⚠️ ما لقيت مين أنشأ #${channel.name}، نستخدم fallback`);
+        }
+
+        await this.protection.checkChannelCreate(channel, executor);
     }
 
     async onChannelDelete(channel) {
         if (!channel.guild) return;
 
+        let executor = null;
+
+        // Try Audit Log
         try {
             const logs = await channel.guild.fetchAuditLogs({
-                limit: 1,
+                limit: 5,
                 type: AuditLogEvent.ChannelDelete
             });
 
-            const entry = logs.entries.first();
-            if (!entry || entry.target?.id !== channel.id) return;
-            if (Date.now() - entry.createdTimestamp > 5000) return;
-
-            const executor = entry.executor;
-            console.log(`[MTX] روم محذوف: #${channel.name} | حذفه: ${executor?.tag || 'unknown'}`);
-
-            await this.protection.checkChannelDelete(channel, executor);
+            const entry = logs.entries.find(e => e.target?.id === channel.id);
+            if (entry && (Date.now() - entry.createdTimestamp <= 10000)) {
+                executor = entry.executor;
+                console.log(`[MTX NUKE] ✅ Audit Log: #${channel.name} | حذفه: ${executor?.tag}`);
+            }
         } catch(e) {
-            console.error('[MTX NUKE] خطأ في channelDelete:', e.message);
+            console.log(`[MTX NUKE] ⚠️ Audit Log فشل في channelDelete: ${e.message}`);
         }
+
+        await this.protection.checkChannelDelete(channel, executor);
     }
 
     async onChannelUpdate(oldChannel, newChannel) {
         if (!oldChannel.guild) return;
 
+        let executor = null;
+
         try {
             const logs = await oldChannel.guild.fetchAuditLogs({
-                limit: 1,
+                limit: 5,
                 type: AuditLogEvent.ChannelUpdate
             });
 
-            const entry = logs.entries.first();
-            if (!entry || entry.target?.id !== oldChannel.id) return;
-            if (Date.now() - entry.createdTimestamp > 5000) return;
-
-            const executor = entry.executor;
-            console.log(`[MTX] روم معدل: #${oldChannel.name} | عدله: ${executor?.tag || 'unknown'}`);
-
-            await this.protection.checkChannelUpdate(newChannel, executor);
+            const entry = logs.entries.find(e => e.target?.id === oldChannel.id);
+            if (entry && (Date.now() - entry.createdTimestamp <= 10000)) {
+                executor = entry.executor;
+                console.log(`[MTX NUKE] ✅ Audit Log: #${oldChannel.name} | عدله: ${executor?.tag}`);
+            }
         } catch(e) {
-            console.error('[MTX NUKE] خطأ في channelUpdate:', e.message);
+            console.log(`[MTX NUKE] ⚠️ Audit Log فشل في channelUpdate: ${e.message}`);
         }
+
+        await this.protection.checkChannelUpdate(newChannel, executor);
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    // 🛡️ ROLE EVENT HANDLERS
+    // ═════════════════════════════════════════════════════════════════
+
+    async onRoleCreate(role) {
+        if (!role.guild) return;
+
+        let executor = null;
+
+        try {
+            const logs = await role.guild.fetchAuditLogs({
+                limit: 5,
+                type: AuditLogEvent.RoleCreate
+            });
+
+            const entry = logs.entries.find(e => e.target?.id === role.id);
+            if (entry && (Date.now() - entry.createdTimestamp <= 10000)) {
+                executor = entry.executor;
+                console.log(`[MTX NUKE] ✅ Audit Log: رول جديد @${role.name} | أنشأه: ${executor?.tag}`);
+            }
+        } catch(e) {
+            console.log(`[MTX NUKE] ⚠️ Audit Log فشل في roleCreate: ${e.message}`);
+        }
+
+        await this.protection.checkRoleCreate(role, executor);
+    }
+
+    async onRoleDelete(role) {
+        if (!role.guild) return;
+
+        let executor = null;
+
+        try {
+            const logs = await role.guild.fetchAuditLogs({
+                limit: 5,
+                type: AuditLogEvent.RoleDelete
+            });
+
+            const entry = logs.entries.find(e => e.target?.id === role.id);
+            if (entry && (Date.now() - entry.createdTimestamp <= 10000)) {
+                executor = entry.executor;
+                console.log(`[MTX NUKE] ✅ Audit Log: رول محذوف @${role.name} | حذفه: ${executor?.tag}`);
+            }
+        } catch(e) {
+            console.log(`[MTX NUKE] ⚠️ Audit Log فشل في roleDelete: ${e.message}`);
+        }
+
+        await this.protection.checkRoleDelete(role, executor);
+    }
+
+    async onRoleUpdate(oldRole, newRole) {
+        if (!oldRole.guild) return;
+
+        let executor = null;
+
+        try {
+            const logs = await oldRole.guild.fetchAuditLogs({
+                limit: 5,
+                type: AuditLogEvent.RoleUpdate
+            });
+
+            const entry = logs.entries.find(e => e.target?.id === oldRole.id);
+            if (entry && (Date.now() - entry.createdTimestamp <= 10000)) {
+                executor = entry.executor;
+                console.log(`[MTX NUKE] ✅ Audit Log: رول معدل @${oldRole.name} | عدله: ${executor?.tag}`);
+            }
+        } catch(e) {
+            console.log(`[MTX NUKE] ⚠️ Audit Log فشل في roleUpdate: ${e.message}`);
+        }
+
+        await this.protection.checkRoleUpdate(newRole, executor);
     }
 
     parseTime(str) {
