@@ -1,27 +1,16 @@
 {
   "name": "mtx-bot",
-  "version": "1.0.0",
-  "description": "MTX Protection Bot - بوت حماية وإدارة متقدم",
+  "version": "3.0.0",
+  "description": "MTX Protection Bot - MongoDB Edition",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node index.js"
   },
-  "keywords": [
-    "discord",
-    "bot",
-    "moderation",
-    "protection",
-    "mtx"
-  ],
   "author": "MTX",
   "license": "MIT",
   "dependencies": {
     "discord.js": "^14.14.1",
     "mongoose": "^8.0.0"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.2"
   },
   "engines": {
     "node": ">=18.0.0"
