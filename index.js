@@ -7,7 +7,7 @@
 // ║   ██║ ╚═╝ ██║   ██║   ██╔╝ ██╗    ██████╔╝╚██████╔╝   ██║            ║
 // ║   ╚═╝     ╚═╝   ╚═╝   ╚═╝  ╚═╝    ╚═════╝  ╚═════╝    ╚═╝            ║
 // ║                                                                       ║
-// ║   🤖 MTX PROTECTION BOT v4.2 - LOCAL STORAGE                          ║
+// ║   🤖 MTX PROTECTION BOT v4.3 - FULL FIX                               ║
 // ║   صناعة مبرمج محترف - نظام حماية وإدارة متكامل                       ║
 // ║   Discord.js v14 | JSON Database | Node.js 18+                       ║
 // ║                                                                       ║
@@ -360,7 +360,7 @@ class MTXBot extends Client {
         console.log(`
     ╔═══════════════════════════════════════════════════╗
     ║                                                   ║
-    ║        🤖 MTX BOT v4.2 - ONLINE                   ║
+    ║        🤖 MTX BOT v4.3 - ONLINE                   ║
     ║        الحالة: 🟢 أخضر (Online)                  ║
     ║        المخزن: 📁 محلي (JSON)                    ║
     ║        السيرفرات: ${this.guilds.cache.size.toString().padEnd(27)}║
