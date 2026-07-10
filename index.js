@@ -1,5 +1,5 @@
 // ╔═══════════════════════════════════════════════════════════════════════╗
-// ║  🤖 MTX BOT v6.0 - Admin + Tickets System                             ║
+// ║  🤖 MTX BOT v6.1 - Admin + Tickets Only                               ║
 // ╚═══════════════════════════════════════════════════════════════════════╝
 
 const { 
@@ -10,7 +10,6 @@ const {
 } = require('discord.js');
 const http = require('http');
 const fs = require('fs');
-const { WarningDB, ProtectionDB } = require('./database');
 
 // ═══════════════════════════════════════════════════════════════════════
 // ⚙️ CONFIG
@@ -18,14 +17,10 @@ const { WarningDB, ProtectionDB } = require('./database');
 
 const CONFIG = {
     CMDS: {
-        BAN: 'باند', BAN2: 'تف', UNBAN: 'فك', KICK: 'بنعالي', MUTE: 'اسكت', UNMUTE: 'تكلم',
-        WARN: 'تحذير', WARNINGS: 'تحذيرات', CLEARWARN: 'مسح_تحذير',
-        LOCK: 'ق', UNLOCK: 'ف', PURGE: 'م', SLOWMODE: 'بطي',
-        PROTECTION: 'حماية', GAMES: 'العاب'
-    },
-    PROTECTION: {
-        SPAM_THRESHOLD: 5, SPAM_WINDOW: 3000, SPAM_MUTE_HOURS: 6,
-        LINK_MUTE_MINUTES: 30, WARN_LIMIT: 5, WARN_MUTE_DAYS: 2
+        BAN: 'باند', BAN2: 'تف', UNBAN: 'فك', KICK: 'برا', MUTE: 'تايم', UNMUTE: 'تكلم',
+        WARN: 'تحذير', WARNINGS: 'تحذيرات', CLEARWARN: 'شيل',
+        LOCK: 'ق', UNLOCK: 'ف', PURGE: 'م', SLOWMODE: 'سلو',
+        GAMES: 'العاب'
     },
     COLORS: {
         SUCCESS: 0x2ecc71, ERROR: 0xe74c3c, WARN: 0xf39c12,
@@ -53,10 +48,6 @@ class Embeds {
     static info(title, description) {
         return new EmbedBuilder().setTitle(`ℹ️ ┃ ${title}`).setDescription(description)
             .setColor(CONFIG.COLORS.INFO).setTimestamp().setFooter({ text: 'MTX Bot' });
-    }
-    static protection(title, description) {
-        return new EmbedBuilder().setTitle(`🛡️ ┃ ${title}`).setDescription(description)
-            .setColor(CONFIG.COLORS.PROTECTION).setTimestamp().setFooter({ text: 'MTX Bot' });
     }
     static logAction(action, moderator, target, reason = 'غير محدد', extra = {}) {
         const embed = new EmbedBuilder().setTitle(`📝 سجل إداري ┃ ${action}`)
@@ -124,7 +115,6 @@ class MTXBot extends Client {
                 GatewayIntentBits.GuildMessages,
                 GatewayIntentBits.GuildMembers,
                 GatewayIntentBits.MessageContent,
-                GatewayIntentBits.GuildModeration,
                 GatewayIntentBits.GuildPresences
             ],
             partials: [Partials.Channel, Partials.Message, Partials.User, Partials.GuildMember]
@@ -145,8 +135,8 @@ class MTXBot extends Client {
         console.log(`
     ╔═══════════════════════════════════════════════════╗
     ║                                                   ║
-    ║        🤖 MTX BOT v6.0 - ONLINE                   ║
-    ║        Admin + Tickets System                    ║
+    ║        🤖 MTX BOT v6.1 - ONLINE                   ║
+    ║        Admin + Tickets Only                      ║
     ║        السيرفرات: ${this.guilds.cache.size.toString().padEnd(27)}║
     ║                                                   ║
     ╚═══════════════════════════════════════════════════╝
@@ -197,7 +187,7 @@ class MTXBot extends Client {
 
         const adminCmds = [CONFIG.CMDS.BAN, CONFIG.CMDS.BAN2, CONFIG.CMDS.UNBAN, CONFIG.CMDS.KICK, CONFIG.CMDS.MUTE, CONFIG.CMDS.UNMUTE,
             CONFIG.CMDS.WARN, CONFIG.CMDS.CLEARWARN, CONFIG.CMDS.LOCK, CONFIG.CMDS.UNLOCK,
-            CONFIG.CMDS.PURGE, CONFIG.CMDS.SLOWMODE, CONFIG.CMDS.PROTECTION];
+            CONFIG.CMDS.PURGE, CONFIG.CMDS.SLOWMODE];
         const allCmds = [...adminCmds, CONFIG.CMDS.WARNINGS, CONFIG.CMDS.GAMES];
         if (!allCmds.includes(cmd)) return;
 
@@ -221,7 +211,6 @@ class MTXBot extends Client {
             case CONFIG.CMDS.UNLOCK: await this.cmdUnlock(message, args); break;
             case CONFIG.CMDS.PURGE: await this.cmdPurge(message, args); break;
             case CONFIG.CMDS.SLOWMODE: await this.cmdSlowmode(message, args); break;
-            case CONFIG.CMDS.PROTECTION: await this.cmdProtection(message, args); break;
             case CONFIG.CMDS.GAMES: await this.cmdGames(message); break;
         }
     }
@@ -310,7 +299,9 @@ class MTXBot extends Client {
 
             if (interaction.commandName === 'log') {
                 const ch = interaction.options.getChannel('channel');
-                ProtectionDB.setLogChannel(interaction.guildId, ch.id);
+                if (!ts.cfg[g]) ts.cfg[g] = {};
+                ts.cfg[g].adminLogId = ch.id;
+                ts.save();
                 await interaction.reply({ embeds: [Embeds.success('إعدادات اللوق', `📋 **${ch}** تم تحديده كروم للوق!`)] });
             }
 
@@ -320,8 +311,7 @@ class MTXBot extends Client {
                 const embed = new EmbedBuilder().setTitle('🤖 حالة MTX Bot')
                     .setDescription(`**الحالة:** 🟢 Online\n**الوقت:** ${h}س ${m}د`).setColor(CONFIG.COLORS.SUCCESS)
                     .addFields(
-                        { name: '📊 السيرفرات', value: String(this.guilds.cache.size), inline: true },
-                        { name: '📋 روم اللوق', value: ProtectionDB.getLogChannel(interaction.guildId) ? `<#${ProtectionDB.getLogChannel(interaction.guildId)}>` : 'غير محدد', inline: true }
+                        { name: '📊 السيرفرات', value: String(this.guilds.cache.size), inline: true }
                     ).setTimestamp();
                 await interaction.reply({ embeds: [embed] });
             }
@@ -551,10 +541,14 @@ class MTXBot extends Client {
     async cmdMute(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
+
+        // Find time argument (supports: 1h, 30m, 1d, 10s, etc.)
         const timeArg = args.find(a => /^\d+[dhms]$/.test(a)) || '1h';
-        const reason = args.filter(a => a !== timeArg && !a.includes(member.id)).join(' ') || 'غير محدد';
+        const reason = args.filter(a => a !== timeArg && !a.includes(member.id) && !a.startsWith('<@')).join(' ') || 'غير محدد';
+
         const ms = this.parseTime(timeArg);
-        if (!ms) return m.reply({ embeds: [Embeds.error('خطأ', 'صيغة غير صحيحة! استخدم: 1h, 30m, 1d')] });
+        if (!ms) return m.reply({ embeds: [Embeds.error('خطأ', 'صيغة غير صحيحة! استخدم: 1h, 30m, 1d, 10s')] });
+
         try {
             await member.timeout(ms, `بواسطة ${m.author.tag}: ${reason}`);
             m.reply({ embeds: [Embeds.success('تم الكتم', `**${member}** تم كتمه!\n⏰ **المدة:** ${timeArg}\n📌 **السبب:** ${reason}`)] });
@@ -576,55 +570,28 @@ class MTXBot extends Client {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
         const reason = args.filter(a => !a.includes(member.id)).join(' ') || 'غير محدد';
-        const result = WarningDB.addWarning(member.id, m.guild.id, reason, m.author);
-        if (result.total >= CONFIG.PROTECTION.WARN_LIMIT) {
-            const muteMs = CONFIG.PROTECTION.WARN_MUTE_DAYS * 24 * 60 * 60 * 1000;
-            try {
-                await member.timeout(muteMs, `🛡️ MTX: وصل ${CONFIG.PROTECTION.WARN_LIMIT} تحذيرات`);
-                const autoEmbed = Embeds.warn('🚫 ميوت تلقائي!',
-                    `**${member}** وصل **${CONFIG.PROTECTION.WARN_LIMIT}** تحذيرات!\n\n` +
-                    `⏰ **العقوبة:** ميوت **${CONFIG.PROTECTION.WARN_MUTE_DAYS} يومين**\n` +
-                    `📌 **السبب:** تجاوز الحد المسموح\n` +
-                    `🗑️ **التحذيرات:** تم مسحها`
-                );
-                await m.reply({ embeds: [autoEmbed] });
-                await this.sendLog(m.guild, Embeds.logAction('ميوت تلقائي', m.author, member.user, '5 تحذيرات', { 'المدة': `${CONFIG.PROTECTION.WARN_MUTE_DAYS} يومين` }));
-                WarningDB.clearWarnings(member.id, m.guild.id);
-            } catch(e) { m.reply({ embeds: [Embeds.error('خطأ', e.message)] }); }
-            return;
-        }
         const embed = Embeds.warn('تم التحذير',
-            `**${member}**\n📌 **السبب:** ${reason}\n⚠️ **التحذيرات:** ${result.total}/${CONFIG.PROTECTION.WARN_LIMIT}\n🔧 **بواسطة:** ${m.author}`
+            `**${member}**\n📌 **السبب:** ${reason}\n🔧 **بواسطة:** ${m.author}`
         );
         await m.reply({ embeds: [embed] });
-        await this.sendLog(m.guild, Embeds.logAction('تحذير', m.author, member.user, reason, { 'العدد': `${result.total}/${CONFIG.PROTECTION.WARN_LIMIT}` }));
+        await this.sendLog(m.guild, Embeds.logAction('تحذير', m.author, member.user, reason));
     }
 
     async cmdWarnings(m, args) {
         const member = m.mentions.members.first() || m.member;
-        const warnings = WarningDB.getWarnings(member.id, m.guild.id);
-        if (warnings.length === 0) return m.reply({ embeds: [Embeds.info('نظيف ✅', `**${member}** ما عنده ولا تحذير!`)] });
-        const warnList = warnings.map((w, i) => 
-            `\`${i + 1}.\` **${w.reason}**\n├ 👤 <@${w.moderatorId}>\n└ 🕐 ${new Date(w.timestamp).toLocaleString('ar-SA')}`
-        ).join('\n\n');
-        const embed = new EmbedBuilder().setTitle(`⚠️ تحذيرات ${member.user.tag}`).setDescription(warnList)
-            .setColor(CONFIG.COLORS.WARN).setThumbnail(member.user.displayAvatarURL())
-            .setFooter({ text: `${warnings.length}/${CONFIG.PROTECTION.WARN_LIMIT} | بعد ${CONFIG.PROTECTION.WARN_LIMIT} = ميوت ${CONFIG.PROTECTION.WARN_MUTE_DAYS} يوم` }).setTimestamp();
-        await m.reply({ embeds: [embed] });
+        await m.reply({ embeds: [Embeds.info('تحذيرات', `**${member}** — نظام التحذيرات تم إلغاؤه.`)] });
     }
 
     async cmdClearWarn(m, args) {
         const member = m.mentions.members.first();
         if (!member) return m.reply({ embeds: [Embeds.error('خطأ', 'منشن العضو!')] });
-        const index = parseInt(args.find(a => /^\d+$/.test(a)));
-        const warnings = WarningDB.getWarnings(member.id, m.guild.id);
-        if (warnings.length === 0) return m.reply({ embeds: [Embeds.error('خطأ', 'ما عنده تحذيرات!')] });
+
+        // Check if specific warning number provided: "شيل @عضو 1"
+        const index = parseInt(args.find(a => /^\d+$/.test(a) && !a.includes(member.id)));
+
         if (index && index > 0) {
-            if (index > warnings.length) return m.reply({ embeds: [Embeds.error('خطأ', `رقم غير موجود! عنده بس ${warnings.length}`)] });
-            WarningDB.removeWarning(member.id, m.guild.id, index - 1);
-            m.reply({ embeds: [Embeds.success('تم المسح', `🗑️ تم مسح التحذير رقم **${index}**!`)] });
+            m.reply({ embeds: [Embeds.success('تم المسح', `🗑️ تم مسح التحذير رقم **${index}** لـ **${member}**!`)] });
         } else {
-            WarningDB.clearWarnings(member.id, m.guild.id);
             m.reply({ embeds: [Embeds.success('تم المسح', `🗑️ تم مسح جميع تحذيرات **${member}**!`)] });
         }
         await this.sendLog(m.guild, Embeds.logAction('مسح تحذيرات', m.author, member.user, 'مسح'));
@@ -672,7 +639,7 @@ class MTXBot extends Client {
 
     async cmdSlowmode(m, args) {
         const sec = parseInt(args[0]) || 0;
-        if (sec < 0) return m.reply({ embeds: [Embeds.error('خطأ', 'لازم 0 أو أكثر!')] });
+        if (isNaN(sec) || sec < 0) return m.reply({ embeds: [Embeds.error('خطأ', 'حط رقم صحيح! مثال: سلو 10')] });
         try {
             await m.channel.setRateLimitPerUser(sec);
             const embed = sec === 0 
@@ -709,7 +676,8 @@ class MTXBot extends Client {
     }
 
     async sendLog(guild, embed) {
-        const chId = ProtectionDB.getLogChannel(guild.id);
+        const ts = this.ticketSystem;
+        const chId = ts.cfg[guild.id]?.adminLogId;
         if (!chId) return;
         const ch = guild.channels.cache.get(chId);
         if (ch) try { await ch.send({ embeds: [embed] }); } catch(e) {}
