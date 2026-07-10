@@ -1,6 +1,14 @@
 const { Client, GatewayIntentBits, Partials, PermissionsBitField, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder, AuditLogEvent, ChannelType } = require('discord.js');
 const { connectDB, addWarn, getWarns, clearWarns, delWarn, isProt, addProt, remProt, protOn, setProt, setLog, getLog } = require('./database');
 
+const http = require('http');
+
+// Keep alive for Render
+http.createServer((req, res) => {
+    res.writeHead(200);
+    res.end('MTX Bot is running!');
+}).listen(process.env.PORT || 3000);
+
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMembers, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildModeration],
     partials: [Partials.Channel, Partials.Message, Partials.User, Partials.GuildMember]
