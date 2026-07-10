@@ -1,7 +1,7 @@
 {
   "name": "mtx-bot",
   "version": "7.0.0",
-  "description": "MTX Discord Bot with MongoDB Atlas persistent storage",
+  "description": "Discord moderation bot with ticket system and MongoDB persistence",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
