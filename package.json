@@ -1,11 +1,17 @@
 {
   "name": "mtx-bot",
-  "version": "1.0.0",
+  "version": "4.2.0",
+  "description": "MTX Protection Bot - بوت حماية وإدارة متقدم",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
+  "author": "MTX",
+  "license": "MIT",
   "dependencies": {
     "discord.js": "^14.14.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
