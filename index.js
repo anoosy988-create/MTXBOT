@@ -1124,9 +1124,12 @@ class MTXBot extends Client {
         const member = message.mentions.members.first();
         if (!member) return message.reply({ embeds: [errorEmbed('خطأ', 'منشن العضو!')] });
 
-        const index = parseInt(args.find(a => /^\d+$/.test(a) && !a.includes(member.id)));
+        // Find number argument (not the member mention)
+        const numberArg = args.find(a => /^\d+$/.test(a));
+        const index = numberArg ? parseInt(numberArg) : null;
 
         if (index && index > 0) {
+            // Remove specific warning by number
             const success = await WarningDB.remove(member.id, message.guild.id, index - 1);
             if (success) {
                 message.reply({ embeds: [successEmbed('تم المسح', `🗑️ تم مسح التحذير رقم **${index}** لـ **${member}**!`)] });
@@ -1135,9 +1138,10 @@ class MTXBot extends Client {
                 message.reply({ embeds: [errorEmbed('خطأ', `ما فيه تحذير رقم **${index}**!`)] });
             }
         } else {
+            // Clear all warnings
             await WarningDB.clear(member.id, message.guild.id);
             message.reply({ embeds: [successEmbed('تم المسح', `🗑️ تم مسح جميع تحذيرات **${member}**!`)] });
-            await this.sendLog(message.guild, logActionEmbed('مسح تحذيرات', message.author, member.user, 'مسح'));
+            await this.sendLog(message.guild, logActionEmbed('مسح تحذيرات', message.author, member.user, 'مسح جميع التحذيرات'));
         }
     }
 
