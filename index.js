@@ -17,7 +17,7 @@ const { WarningDB, ConfigDB, TicketDB } = require('./database.js');
 // ─────────────────────────────────────────────────────────────
 
 const COMMANDS = {
-    BAN: 'باند', BAN2: 'تف', UNBAN: 'فك', KICK: 'برا',
+    BAN: 'باند', BAN2: 'تف', BAN3: 'بنعالي', BAN4: 'لف', UNBAN: 'فك', KICK: 'برا',
     MUTE: 'تايم', UNMUTE: 'تكلم', WARN: 'تح',
     WARNINGS: 'تحذيرات', CLEARWARN: 'شيل',
     LOCK: 'ق', UNLOCK: 'ف', PURGE: 'م', SLOWMODE: 'سلو',
@@ -274,7 +274,7 @@ class MTXBot extends Client {
         const args = parts.slice(1);
 
         const adminCommands = [
-            COMMANDS.BAN, COMMANDS.BAN2, COMMANDS.UNBAN, COMMANDS.KICK,
+            COMMANDS.BAN, COMMANDS.BAN2, COMMANDS.BAN3, COMMANDS.BAN4, COMMANDS.UNBAN, COMMANDS.KICK,
             COMMANDS.MUTE, COMMANDS.UNMUTE, COMMANDS.WARN, COMMANDS.CLEARWARN,
             COMMANDS.LOCK, COMMANDS.UNLOCK, COMMANDS.PURGE, COMMANDS.SLOWMODE,
             COMMANDS.ROLE
@@ -292,7 +292,9 @@ class MTXBot extends Client {
 
         switch (cmd) {
             case COMMANDS.BAN:
-            case COMMANDS.BAN2: await this.cmdBan(message, args); break;
+            case COMMANDS.BAN2:
+            case COMMANDS.BAN3:
+            case COMMANDS.BAN4: await this.cmdBan(message, args); break;
             case COMMANDS.UNBAN: await this.cmdUnban(message, args); break;
             case COMMANDS.KICK: await this.cmdKick(message, args); break;
             case COMMANDS.MUTE: await this.cmdMute(message, args); break;
